@@ -1,0 +1,78 @@
+---
+# =============================================================================
+# ccn-push/tasks/logout.yaml
+#
+# PURPOSE
+#   Clears stored credentials from Docker's and Helm's config files.
+#   Called from the playbook's `always:` block so it runs even when an
+#   earlier task fails — credentials should never linger on disk after
+#   the run finishes, regardless of outcome.
+#
+# INPUTS (vars)
+#   ccn_registry_auth_required   bool   Skip all work when false
+#   ccn_registry_endpoint        str    Which registry to log out of
+#
+# OUTPUTS
+#   None. The two config files (~/.docker/config.json, Helm's registry
+#   config) have the relevant entries removed.
+#
+# SIDE EFFECTS
+#   docker logout removes the auth entry from ~/.docker/config.json.
+#   helm registry logout removes the corresponding entry from
+#   ~/.config/helm/registry/config.json.
+#
+# IDEMPOTENCY
+#   Safe to re-run. failed_when: false ensures that "no such credential"
+#   doesn't abort the playbook — that's the expected outcome on the
+#   second run.
+#
+# FAILURE MODES
+#   We deliberately don't have any. Logout is best-effort cleanup;
+#   if Docker or Helm can't find a credential to clear, that's fine.
+#   failed_when: false ensures both logouts always succeed from
+#   Ansible's perspective.
+#
+# DESIGN NOTES
+#   Why this isn't a handler:
+#     Handlers run only on "changed" results. We need logout to fire
+#     unconditionally after the push block (including on failure).
+#     Placement in the playbook's `always:` block makes that work.
+#
+#   no_log: true:
+#     The logout command itself doesn't accept credentials, but its
+#     output can include the registry endpoint and username. We mark
+#     no_log out of caution — there's no operational benefit to seeing
+#     the logout output in detail.
+# =============================================================================
+
+- name: Skip logout — registry is anonymous
+  ansible.builtin.debug:
+    msg: "ccn_registry_auth_required is false; no credentials to remove."
+  when: not (ccn_registry_auth_required | bool)
+  tags: [logout]
+
+- name: Docker logout from closed-network registry
+  ansible.builtin.command:
+    cmd: "docker logout {{ ccn_registry_endpoint }}"
+  register: docker_logout_result
+  changed_when: "'Removing login credentials' in docker_logout_result.stdout"
+  failed_when: false
+  no_log: true
+  when: ccn_registry_auth_required | bool
+  tags: [logout]
+
+- name: Helm registry logout
+  ansible.builtin.command:
+    cmd: "helm registry logout {{ ccn_registry_endpoint }}"
+  register: helm_logout_result
+  changed_when: "'Logout succeeded' in helm_logout_result.stdout"
+  failed_when: false
+  no_log: true
+  when: ccn_registry_auth_required | bool
+  tags: [logout]
+
+- name: Confirm logout
+  ansible.builtin.debug:
+    msg: "Logged out of {{ ccn_registry_endpoint }} (docker + helm)"
+  when: ccn_registry_auth_required | bool
+  tags: [logout]

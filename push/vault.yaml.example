@@ -1,0 +1,61 @@
+---
+# =============================================================================
+# vault.yaml.example — ccn-push project
+#
+# Template for vault.yaml — the encrypted variables file used by ccn-push.
+#
+# SETUP:
+#   1. cp vault.yaml.example vault.yaml
+#   2. Edit vault.yaml — fill in real values
+#   3. ansible-vault encrypt vault.yaml
+#
+# EDIT LATER:
+#   ansible-vault edit vault.yaml      ← decrypt + edit + re-encrypt in one step
+#   ansible-vault view vault.yaml      ← decrypt to stdout (read-only)
+#
+# NEVER COMMIT THE UNENCRYPTED vault.yaml. The .gitignore excludes it
+# by name, but verify with `git status` before every push.
+#
+# WHAT'S IN HERE   : The registry endpoint (host, port), TLS/auth toggles,
+#                    robot account username, and robot token. These reveal
+#                    internal network topology or grant push access, so they
+#                    are kept encrypted.
+#
+# NOT IN HERE      : Filesystem paths (bundle location, staging directory,
+#                    CA path) live in group_vars/all/main.yaml. They're
+#                    operational defaults that should be visible without
+#                    requiring the vault password.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Closed-network registry endpoint
+#
+# Defaults below match a lab Docker Registry v2 on registry.example.com:5000
+# running HTTP with no authentication. Adjust to your environment.
+# -----------------------------------------------------------------------------
+vault_ccn_registry_host:          "registry.example.com"
+vault_ccn_registry_port:          5000
+
+# Whether the registry uses plain HTTP (true) or HTTPS (false).
+# When true, the Docker daemon is configured to allow this endpoint as
+# an insecure registry and the trust_ca task is skipped.
+vault_ccn_registry_insecure:      true
+
+# Whether the registry requires authentication.
+# When false, login/logout tasks are skipped and vault_ccn_registry_token
+# is not used.
+vault_ccn_registry_auth_required: false
+
+# Username sent during docker login. Ignored when auth_required is false.
+# For a plain v2 registry with htpasswd auth, this is the htpasswd username.
+vault_ccn_registry_robot_username: "airgap-bot"
+
+# -----------------------------------------------------------------------------
+# Closed-network registry — robot account token
+#
+# Used to push container images and OCI Helm charts into the local
+# Docker Registry v2. Treated as a password by `docker login` and
+# `helm registry login`. Required only when vault_ccn_registry_auth_required
+# is true — leave as REPLACE_ME (or omit) for anonymous registries.
+# -----------------------------------------------------------------------------
+vault_ccn_registry_token: "REPLACE_ME"

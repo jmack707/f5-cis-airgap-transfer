@@ -1,0 +1,33 @@
+---
+# =============================================================================
+# vault.yaml.example — open-pull project
+#
+# Template for vault.yaml — the encrypted variables file.
+#
+# SETUP:
+#   1. cp vault.yaml.example vault.yaml
+#   2. Edit vault.yaml — fill in real values
+#   3. ansible-vault encrypt vault.yaml
+#
+# EDIT LATER:
+#   ansible-vault edit vault.yaml      ← decrypt + edit + re-encrypt in one step
+#   ansible-vault view vault.yaml      ← decrypt to stdout (read-only)
+#
+# NEVER COMMIT THE UNENCRYPTED vault.yaml. The .gitignore excludes it
+# by name, but verify with `git status` before every push.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Docker Hub (used by open-pull/tasks/pull_dockerhub.yaml)
+# -----------------------------------------------------------------------------
+vault_dockerhub_username: "REPLACE_ME"
+vault_dockerhub_password: "REPLACE_ME"
+
+# -----------------------------------------------------------------------------
+# F5 NGINX private registry (used by open-pull/tasks/pull_nginx_registry.yaml)
+#
+# The username field gets the entire contents of the .jwt file downloaded
+# from MyF5; the password is the literal string "none" (not a placeholder).
+# Obtain at: https://my.f5.com → My Products & Plans → Subscriptions
+# -----------------------------------------------------------------------------
+vault_nginx_jwt_token: "REPLACE_ME"

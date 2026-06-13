@@ -1,0 +1,74 @@
+---
+# =============================================================================
+# open-pull/playbooks/pull_artifacts.yaml
+#
+# PURPOSE
+#   Entry point for stage 1 of the air-gap pipeline. Pulls every container
+#   image and Helm chart needed by the closed-network Kubernetes cluster,
+#   writes a provenance manifest with per-file SHA-256 checksums, and
+#   produces a single compressed bundle for physical transfer.
+#
+# SEQUENCE
+#   1. preflight              CLI checks, disk space, directory creation
+#   2. pull_dockerhub         Login → pull → save (3 images) → logout
+#   3. pull_quay              Pull → save (4 cert-manager images), no login
+#   4. pull_nginx_registry    JWT login → pull → save (1 image) → logout
+#   5. pull_charts            Add repos → repo update → pull (3 charts)
+#   6. bundle                 Per-file SHA-256 → manifest → tar.gz → outer SHA-256
+#
+# RUN
+#   ansible-playbook open-pull/playbooks/pull_artifacts.yaml --ask-vault-pass
+#
+# RUN A SUBSET (using tags)
+#   --tags preflight           Just validate the environment
+#   --tags pull_dockerhub      Just the Docker Hub images
+#   --tags pull                All registry pulls, skip bundle
+#   --tags bundle              Re-bundle existing staged files
+#                                (assumes previous pulls already populated
+#                                 image_tar_dir and helm_chart_dir)
+#
+# DRY RUN
+#   --check                    Read-only walkthrough; command modules are
+#                              skipped silently
+#
+# DESIGN NOTES
+#   gather_facts: true is required because preflight uses
+#   ansible_facts['mounts'] for the disk space check.
+#
+#   Each registry has its own task file because the auth mechanics differ
+#   meaningfully (Docker Hub: user+password; Quay: anonymous; F5 NGINX:
+#   JWT-as-username + literal "none" as password). Combining them would
+#   produce a tangle of conditional logic.
+# =============================================================================
+
+- name: Pull all artifacts and bundle for air-gap transfer
+  hosts: localhost
+  gather_facts: true
+  vars_files:
+    - ../../group_vars/all/main.yaml
+    - ../../vault.yaml
+
+  tasks:
+    - name: Preflight checks
+      ansible.builtin.include_tasks: ../tasks/preflight.yaml
+      tags: [preflight]
+
+    - name: Pull Docker Hub images
+      ansible.builtin.include_tasks: ../tasks/pull_dockerhub.yaml
+      tags: [pull, pull_dockerhub]
+
+    - name: Pull Quay.io images (cert-manager)
+      ansible.builtin.include_tasks: ../tasks/pull_quay.yaml
+      tags: [pull, pull_quay]
+
+    - name: Pull NGINX Plus image from F5 private registry
+      ansible.builtin.include_tasks: ../tasks/pull_nginx_registry.yaml
+      tags: [pull, pull_nginx]
+
+    - name: Pull Helm charts
+      ansible.builtin.include_tasks: ../tasks/pull_charts.yaml
+      tags: [pull, pull_charts]
+
+    - name: Bundle all artifacts
+      ansible.builtin.include_tasks: ../tasks/bundle.yaml
+      tags: [bundle]

@@ -1,0 +1,129 @@
+---
+# =============================================================================
+# ccn-push/playbooks/push_artifacts_remove.yaml
+#
+# PURPOSE
+#   Teardown counterpart to push_artifacts.yaml. Removes the local
+#   staging area, and optionally also un-trusts the registry CA and/or
+#   removes the insecure-registries entry. Does NOT delete images from
+#   the registry itself — use the registry's own admin tooling for that.
+#
+# RUN (interactive — prompts before deleting)
+#   ansible-playbook ccn-push/playbooks/push_artifacts_remove.yaml --ask-vault-pass
+#
+# RUN (CI / non-interactive)
+#   ansible-playbook ccn-push/playbooks/push_artifacts_remove.yaml \
+#     --extra-vars "confirm_removal=true" --ask-vault-pass
+#
+# OPTIONAL — also un-trust the CA (HTTPS profile only)
+#   --extra-vars "confirm_removal=true remove_ca=true"
+#
+# OPTIONAL — also remove insecure-registries entry (HTTP profile, restarts Docker)
+#   --extra-vars "confirm_removal=true remove_insecure_entry=true"
+#
+# DESIGN NOTES
+#   confirm_removal default is false → an interactive operator running
+#   without the flag must hit ENTER explicitly. The flag bypasses the
+#   prompt for CI/automation contexts where no TTY is available.
+#
+#   The remove_ca and remove_insecure_entry flags are independent and
+#   default to false because most operators want to keep the trust /
+#   insecure-registries entry in place across multiple push runs.
+#   Tearing down trust between runs would require re-establishing it
+#   every time, which defeats the purpose.
+#
+#   vault.yaml IS required here because group_vars values reference
+#   vault variables via Jinja indirection. The teardown doesn't actually
+#   use any credentials, but Ansible still needs to resolve the values.
+# =============================================================================
+
+- name: Remove ccn-push staging area
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../group_vars/all/main.yaml
+    - ../../vault.yaml
+
+  vars:
+    confirm_removal:        false
+    remove_ca:              false
+    remove_insecure_entry:  false
+
+  tasks:
+    - name: Confirm removal (interactive)
+      ansible.builtin.pause:
+        prompt: >-
+          About to delete {{ ccn_staging_dir }}. Press ENTER to continue, Ctrl-C then A to abort.
+      when: not (confirm_removal | bool)
+
+    - name: Remove staging directory
+      ansible.builtin.file:
+        path:  "{{ ccn_staging_dir }}"
+        state: absent
+
+    # ----- HTTPS-only: optionally remove trusted CA --------------------------
+    - name: Compute Docker per-registry cert directory
+      ansible.builtin.set_fact:
+        docker_ca_dir: >-
+          /etc/docker/certs.d/{{ ccn_registry_host }}{% if ccn_registry_port != 443 %}:{{ ccn_registry_port }}{% endif %}
+      when: remove_ca | bool
+
+    - name: Remove trusted CA for the registry
+      ansible.builtin.file:
+        path:  "{{ docker_ca_dir }}"
+        state: absent
+      become: true
+      when: remove_ca | bool
+
+    # ----- HTTP-only: optionally remove insecure-registries entry -----------
+    - name: Remove insecure-registries entry from /etc/docker/daemon.json
+      when: remove_insecure_entry | bool
+      become: true
+      block:
+        - name: Stat /etc/docker/daemon.json
+          ansible.builtin.stat:
+            path: /etc/docker/daemon.json
+          register: daemon_json_stat
+
+        - name: Read daemon.json
+          ansible.builtin.slurp:
+            src: /etc/docker/daemon.json
+          register: daemon_json_raw
+          when: daemon_json_stat.stat.exists
+
+        - name: Parse and strip the registry from insecure-registries
+          ansible.builtin.set_fact:
+            cleaned_daemon_config: >-
+              {{ (daemon_json_raw.content | b64decode | from_json) | combine({
+                   'insecure-registries':
+                     ((daemon_json_raw.content | b64decode | from_json)['insecure-registries']
+                      | default([]) | reject('equalto', ccn_registry_endpoint) | list)
+                 }) }}
+          when: daemon_json_stat.stat.exists
+
+        - name: Write cleaned /etc/docker/daemon.json
+          ansible.builtin.copy:
+            content: "{{ cleaned_daemon_config | to_nice_json }}\n"
+            dest:    /etc/docker/daemon.json
+            owner:   root
+            group:   root
+            mode:    "0644"
+            backup:  true
+          diff: true
+          register: daemon_json_cleaned
+          when: daemon_json_stat.stat.exists
+
+        - name: Restart Docker to apply the removal
+          ansible.builtin.service:
+            name:  docker
+            state: restarted
+          when:
+            - daemon_json_stat.stat.exists
+            - daemon_json_cleaned is changed
+
+    - name: Removal complete
+      ansible.builtin.debug:
+        msg:
+          - "Removed: {{ ccn_staging_dir }}"
+          - "{{ 'Removed trusted CA: ' + docker_ca_dir if (remove_ca | bool) else 'Trusted CA left in place.' }}"
+          - "{{ 'Removed insecure-registries entry for ' + ccn_registry_endpoint + ' and restarted Docker.' if (remove_insecure_entry | bool) else 'Docker insecure-registries left in place.' }}"

@@ -1,0 +1,109 @@
+---
+# =============================================================================
+# ccn-push/tasks/verify_manifest.yaml
+#
+# PURPOSE
+#   Recomputes the SHA-256 of every image .tar and chart .tgz extracted
+#   from the bundle and asserts it matches the value recorded in
+#   manifest.json by the pull stage. If anything's off, the playbook
+#   aborts BEFORE any docker load runs — the integrity check is the
+#   load-bearing safeguard between transit corruption and the registry.
+#
+# INPUTS (vars)
+#   bundle_manifest          dict   Loaded by extract_bundle.yaml
+#   ccn_staging_dir          str    Where the bundle was extracted
+#
+# OUTPUTS (set_fact)
+#   image_sha_results        list   Stat results with checksums (per image)
+#   chart_sha_results        list   Stat results with checksums (per chart)
+#
+# SIDE EFFECTS
+#   None. This task is purely read-only.
+#
+# IDEMPOTENCY
+#   Always safe to re-run. Recomputes the checksums every time.
+#
+# FAILURE MODES
+#   - Image .tar checksum mismatch    → bundle is corrupted OR manifest is
+#                                        stale (e.g. someone rebuilt the
+#                                        bundle without refreshing
+#                                        manifest.json — exactly the
+#                                        scenario this check exists for)
+#   - Chart .tgz checksum mismatch    → same as above
+#
+#   In either case the operator must rebuild the bundle from scratch
+#   on the pull side and re-transfer. DO NOT modify the manifest by
+#   hand to match the corrupt files — that defeats the entire purpose
+#   of having an integrity check.
+#
+# DESIGN NOTES
+#   We use ansible.builtin.stat with checksum_algorithm: sha256 rather
+#   than shelling out to sha256sum. This keeps the checksum computation
+#   in the Ansible module (consistent error reporting, no shell parsing)
+#   and avoids any character-encoding concerns with filenames.
+#
+#   The assert tasks use loop_control.label to keep output terse — one
+#   line per file instead of dumping the full stat dict (which is 40+
+#   fields per file). Big improvement to operator log readability.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Images
+# -----------------------------------------------------------------------------
+
+- name: Stat every image .tar with SHA-256
+  ansible.builtin.stat:
+    path:               "{{ ccn_staging_dir }}/images/{{ item.tarname }}"
+    checksum_algorithm: sha256
+    get_checksum:       true
+  loop: "{{ bundle_manifest.images }}"
+  loop_control:
+    label: "{{ item.tarname }}"
+  register: image_sha_results
+  tags: [verify]
+
+- name: Assert every image .tar checksum matches the manifest
+  ansible.builtin.assert:
+    that:
+      - item.stat.checksum == item.item.sha256
+    fail_msg: >-
+      Checksum mismatch for {{ item.item.tarname }}.
+      Expected (manifest): {{ item.item.sha256 }}
+      Actual   (on disk) : {{ item.stat.checksum }}
+      Bundle integrity is compromised — do NOT proceed with the push.
+      Rebuild the bundle on the pull side and re-transfer.
+    success_msg: "Verified {{ item.item.tarname }}"
+  loop: "{{ image_sha_results.results }}"
+  loop_control:
+    label: "{{ item.item.tarname }}"
+  tags: [verify]
+
+# -----------------------------------------------------------------------------
+# Charts
+# -----------------------------------------------------------------------------
+
+- name: Stat every chart .tgz with SHA-256
+  ansible.builtin.stat:
+    path:               "{{ ccn_staging_dir }}/charts/{{ item.filename }}"
+    checksum_algorithm: sha256
+    get_checksum:       true
+  loop: "{{ bundle_manifest.charts }}"
+  loop_control:
+    label: "{{ item.filename }}"
+  register: chart_sha_results
+  tags: [verify]
+
+- name: Assert every chart .tgz checksum matches the manifest
+  ansible.builtin.assert:
+    that:
+      - item.stat.checksum == item.item.sha256
+    fail_msg: >-
+      Checksum mismatch for {{ item.item.filename }}.
+      Expected (manifest): {{ item.item.sha256 }}
+      Actual   (on disk) : {{ item.stat.checksum }}
+      Bundle integrity is compromised — do NOT proceed with the push.
+    success_msg: "Verified {{ item.item.filename }}"
+  loop: "{{ chart_sha_results.results }}"
+  loop_control:
+    label: "{{ item.item.filename }}"
+  tags: [verify]

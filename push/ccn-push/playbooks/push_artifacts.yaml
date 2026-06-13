@@ -1,0 +1,107 @@
+---
+# =============================================================================
+# ccn-push/playbooks/push_artifacts.yaml
+#
+# PURPOSE
+#   Entry point for stage 2 of the air-gap pipeline. Reads the bundle
+#   produced by the pull stage, verifies it, and publishes all images
+#   and OCI charts into the closed-network registry.
+#
+# SEQUENCE (each step is a task file under ccn-push/tasks/)
+#   1. preflight                       Read-only checks (no mutations)
+#   2. configure_insecure_registry     Edits daemon.json (HTTP profile only)
+#   3. trust_ca                        Installs private CA (HTTPS profile only)
+#   4. extract_bundle                  tar -xzf into ccn_staging_dir
+#   5. verify_manifest                 SHA-256 of every file vs manifest
+#   6. build_push_plan                 Joins manifest with push_repo maps
+#   7. block: login → push images → push charts
+#      always: logout                  Logout fires even if block fails
+#
+# RUN
+#   ansible-playbook ccn-push/playbooks/push_artifacts.yaml --ask-vault-pass
+#
+# RUN A SUBSET (using tags)
+#   --tags preflight              Just validate the environment
+#   --tags extract,verify         Bundle integrity check only
+#   --tags push                   Skip preflight, skip extract, go straight
+#                                  to login + push + logout (assumes the
+#                                  staging area is already populated)
+#
+# DRY RUN
+#   --check                       Read-only walkthrough (skips command
+#                                  modules that don't support check mode)
+#
+# DESIGN NOTES
+#   The login → push → logout block uses Ansible's block/always pattern
+#   so logout fires even when an earlier push fails. Without this, a
+#   robot token could linger in ~/.docker/config.json after a failed
+#   run — a meaningful credential-hygiene issue in a shared host.
+#
+#   gather_facts: true is required because preflight uses
+#   ansible_facts['mounts'] for the disk space check. The few-hundred-ms
+#   cost is negligible vs. having to gate the disk check separately.
+#
+#   vars_files order matters:
+#     1. group_vars/all/main.yaml — operational defaults
+#     2. vault.yaml               — credentials and endpoint topology
+#   Both are required because group_vars references vault variables
+#   via Jinja indirection.
+# =============================================================================
+
+- name: Push air-gap bundle to closed-network registry
+  hosts: localhost
+  gather_facts: true
+  vars_files:
+    - ../../group_vars/all/main.yaml
+    - ../../vault.yaml
+
+  tasks:
+    - name: Preflight checks
+      ansible.builtin.include_tasks: ../tasks/preflight.yaml
+      tags: [preflight]
+
+    - name: Configure Docker for insecure (HTTP) registry — skipped if HTTPS
+      ansible.builtin.include_tasks: ../tasks/configure_insecure_registry.yaml
+      tags: [configure_insecure_registry]
+
+    - name: Trust private CA in Docker — skipped if insecure
+      ansible.builtin.include_tasks: ../tasks/trust_ca.yaml
+      tags: [trust_ca]
+
+    - name: Extract bundle
+      ansible.builtin.include_tasks: ../tasks/extract_bundle.yaml
+      tags: [extract]
+
+    - name: Verify file checksums against manifest
+      ansible.builtin.include_tasks: ../tasks/verify_manifest.yaml
+      tags: [verify]
+
+    - name: Build push plan
+      ansible.builtin.include_tasks: ../tasks/build_push_plan.yaml
+      tags: [plan]
+
+    # ----- Login → push → logout block --------------------------------------
+    # Logout in `always:` fires even when an earlier task in the block
+    # fails, preventing stale credentials on disk after a partial run.
+    - name: Authenticate, push, and cleanly log out
+      tags: [push]
+      block:
+        - name: Authenticate to closed-network registry
+          ansible.builtin.include_tasks: ../tasks/login.yaml
+
+        - name: Load and push container images
+          ansible.builtin.include_tasks: ../tasks/load_and_push_images.yaml
+
+        - name: Push Helm charts as OCI artifacts
+          ansible.builtin.include_tasks: ../tasks/push_charts.yaml
+      always:
+        - name: Logout from registry
+          ansible.builtin.include_tasks: ../tasks/logout.yaml
+
+    - name: Done
+      ansible.builtin.debug:
+        msg:
+          - "ccn-push complete."
+          - "Registry : {{ ccn_registry_endpoint }}"
+          - "Images   : {{ push_plan | length }}"
+          - "Charts   : {{ chart_push_plan | length }}"

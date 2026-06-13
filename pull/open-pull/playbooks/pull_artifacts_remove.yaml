@@ -1,0 +1,68 @@
+---
+# =============================================================================
+# open-pull/playbooks/pull_artifacts_remove.yaml
+#
+# PURPOSE
+#   Teardown counterpart to pull_artifacts.yaml. Removes the local
+#   staging area. Tarnames and chart filenames are computed inline using
+#   the same convention as the rest of the project.
+#
+# RUN
+#   ansible-playbook open-pull/playbooks/pull_artifacts_remove.yaml
+#   ansible-playbook open-pull/playbooks/pull_artifacts_remove.yaml \
+#     --extra-vars "confirm_removal=true"     # non-interactive
+# =============================================================================
+
+- name: Remove artifact staging area
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../group_vars/all/main.yaml
+
+  vars:
+    confirm_removal: false
+
+  tasks:
+    - name: Confirm removal (interactive)
+      ansible.builtin.pause:
+        prompt: >-
+          About to delete all content under {{ artifact_staging_dir }}.
+          Press ENTER to continue or Ctrl-C then A to abort.
+      when: not (confirm_removal | bool)
+
+    - name: Remove image .tar files
+      ansible.builtin.file:
+        path:  "{{ image_tar_dir }}/{{ item.repo | basename }}_{{ item.tag }}.tar"
+        state: absent
+      loop: "{{ dockerhub_images + quay_images + nginx_images }}"
+      loop_control:
+        label: "{{ item.repo | basename }}_{{ item.tag }}.tar"
+
+    - name: Remove Helm chart archives
+      ansible.builtin.file:
+        path:  "{{ helm_chart_dir }}/{{ item.chart | basename }}-{{ item.version }}.tgz"
+        state: absent
+      loop: "{{ helm_charts }}"
+      loop_control:
+        label: "{{ item.chart | basename }}-{{ item.version }}.tgz"
+
+    - name: Remove bundle, checksum, and manifest
+      ansible.builtin.file:
+        path:  "{{ item }}"
+        state: absent
+      loop:
+        - "{{ artifact_staging_dir }}/{{ bundle_filename }}"
+        - "{{ artifact_staging_dir }}/{{ bundle_filename }}.sha256"
+        - "{{ artifact_staging_dir }}/manifest.json"
+
+    - name: Remove staging subdirectories
+      ansible.builtin.file:
+        path:  "{{ item }}"
+        state: absent
+      loop:
+        - "{{ image_tar_dir }}"
+        - "{{ helm_chart_dir }}"
+
+    - name: Removal complete
+      ansible.builtin.debug:
+        msg: "Staging area cleared: {{ artifact_staging_dir }}"

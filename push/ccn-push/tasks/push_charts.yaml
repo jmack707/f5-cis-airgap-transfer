@@ -1,0 +1,70 @@
+---
+# =============================================================================
+# ccn-push/tasks/push_charts.yaml
+#
+# PURPOSE
+#   Pushes each Helm chart .tgz to the closed-network registry as an
+#   OCI artifact, using `helm push <chart>.tgz oci://<registry>/<path>`.
+#
+# INPUTS (vars)
+#   chart_push_plan          list of dicts (from build_push_plan.yaml)
+#
+# OUTPUTS
+#   Charts available as OCI artifacts in the closed-network registry.
+#   Reference format after push:
+#     oci://<registry>/<push_chart_repo>/<chart-name>:<chart-version>
+#
+# SIDE EFFECTS
+#   helm push uploads each chart to the registry. Charts that already
+#   exist with the same digest are skipped by the registry.
+#
+# IDEMPOTENCY
+#   Helm push is idempotent at the artifact level. Pushing the same
+#   chart .tgz twice produces the same digest and the registry treats
+#   the second push as a no-op (apart from accepting and discarding
+#   the upload).
+#
+# FAILURE MODES
+#   - "registry has no oci capability"        → registry doesn't support
+#                                                 OCI artifacts (uncommon
+#                                                 on modern v2 images)
+#   - 401/403                                  → robot account RBAC wrong
+#   - "unsupported MIME type"                  → very old registry; needs
+#                                                 distribution-spec 1.0+
+#
+# DESIGN NOTES
+#   Why Helm 3.8.0+?
+#     OCI artifact push went GA in 3.8.0. 3.7.x had it as an experimental
+#     feature behind HELM_EXPERIMENTAL_OCI=1. Older versions can't push
+#     to OCI at all. The preflight task enforces this floor.
+#
+#   Why the target URL is "oci://<registry>/<path>" (no chart name)?
+#     Helm derives the chart name and version from the .tgz file's
+#     Chart.yaml. The target URL is the *parent path* in the registry;
+#     the chart name becomes the leaf. So:
+#       helm push f5-bigip-ctlr-0.0.35.tgz oci://registry.example.com:5000/f5/charts
+#     → registry.example.com:5000/f5/charts/f5-bigip-ctlr:0.0.35
+#
+#   changed_when:
+#     Helm reports "Pushed: ..." on a successful new push and "Digest: ..."
+#     on the line after. Re-pushing an existing artifact still emits both
+#     lines but the registry skips the blob upload. We report "changed"
+#     on either signal, which means re-runs show as "changed" even when
+#     nothing materially moved. Accepting that noise to avoid false
+#     "ok" reports on a real failure.
+# =============================================================================
+
+- name: Push Helm charts as OCI artifacts
+  ansible.builtin.command:
+    cmd: "helm push {{ item.local_path }} {{ item.target_oci }}"
+  loop: "{{ chart_push_plan }}"
+  loop_control:
+    label: "{{ item.filename }} → {{ item.target_oci }}"
+  register: chart_push_results
+  changed_when: "'Pushed' in chart_push_results.stdout or 'Digest:' in chart_push_results.stdout"
+  tags: [push, push_charts]
+
+- name: Report chart push summary
+  ansible.builtin.debug:
+    msg: "Pushed {{ chart_push_plan | length }} charts to {{ ccn_registry_endpoint }} as OCI artifacts"
+  tags: [push, push_charts]

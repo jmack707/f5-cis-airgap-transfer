@@ -1,0 +1,79 @@
+---
+# =============================================================================
+# group_vars/all/main.yaml — push project
+#
+# PURPOSE : Single source of truth for every non-secret value used by the
+#           closed-network registry import stage.
+#
+# VERSION : This file is INTENTIONALLY version-agnostic. Image push targets
+#           are keyed by image BASENAME (not full tarname). When the pull
+#           side bumps cert-manager from v1.19.1 to v1.19.2, this file
+#           doesn't change.
+#
+# SECRETS : Credentials and registry topology live in vault.yaml at the
+#           repo root.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Bundle location
+# -----------------------------------------------------------------------------
+ccn_bundle_incoming_path: "/srv/airgap-incoming/airgap-bundle.tar.gz"
+ccn_staging_dir:          "/srv/airgap-staging"
+
+# -----------------------------------------------------------------------------
+# Registry — credentials and topology live in vault.yaml
+# -----------------------------------------------------------------------------
+ccn_registry_host:           "{{ vault_ccn_registry_host }}"
+ccn_registry_port:           "{{ vault_ccn_registry_port }}"
+ccn_registry_endpoint:       "{{ ccn_registry_host }}:{{ ccn_registry_port }}"
+ccn_registry_insecure:       "{{ vault_ccn_registry_insecure | default(false) }}"
+ccn_registry_auth_required:  "{{ vault_ccn_registry_auth_required | default(false) }}"
+ccn_registry_robot_username: "{{ vault_ccn_registry_robot_username | default('') }}"
+ccn_registry_ca_path:        "/etc/ssl/certs/internal-ca.crt"
+
+ccn_min_free_disk_gb: 30
+
+# -----------------------------------------------------------------------------
+# Image push targets — keyed by image BASENAME (not tarname)
+#
+# The push side reads manifest.images[].repo and joins by:
+#   image_push_map[repo | basename]
+#
+# This is deliberately version-agnostic. Bumping cert-manager from
+# v1.19.1 to v1.19.2 doesn't change this map.
+#
+# Target reference format:
+#   <ccn_registry_endpoint>/<value>:<tag from manifest>
+# Example:
+#   registry.example.com:5000/f5/k8s-bigip-ctlr:2.20.3
+# -----------------------------------------------------------------------------
+image_push_map:
+  # Docker Hub sources
+  k8s-bigip-ctlr:               "f5/k8s-bigip-ctlr"
+  nginx-hello:                  "demos/nginx-hello"
+  syslog-ng:                    "infra/syslog-ng"
+
+  # Quay sources (cert-manager family)
+  cert-manager-controller:      "cert-manager/controller"
+  cert-manager-cainjector:      "cert-manager/cainjector"
+  cert-manager-webhook:         "cert-manager/webhook"
+  cert-manager-startupapicheck: "cert-manager/startupapicheck"
+
+  # F5 NGINX private registry source
+  nginx-plus-ingress:           "nginx/nginx-plus-ingress"
+
+# -----------------------------------------------------------------------------
+# Chart push targets — keyed by chart BASENAME (not filename)
+#
+# The push side reads manifest.charts[].chart and joins by:
+#   chart_push_map[chart | basename]
+#
+# Target reference format:
+#   oci://<ccn_registry_endpoint>/<value>/<chart-name>:<chart-version>
+# Example:
+#   oci://registry.example.com:5000/f5/charts/f5-bigip-ctlr:0.0.35
+# -----------------------------------------------------------------------------
+chart_push_map:
+  f5-bigip-ctlr: "f5/charts"
+  nginx-ingress: "nginx/charts"
+  cert-manager:  "cert-manager/charts"

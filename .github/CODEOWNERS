@@ -1,0 +1,15 @@
+# =============================================================================
+# CODEOWNERS — f5-airgap-k8s
+#
+# Owners listed here are automatically requested for review on PRs that
+# touch the specified paths. Replace @your-username with the actual
+# GitHub handle (or a team like @your-org/platform).
+# =============================================================================
+
+# Everything by default
+*               @your-username
+
+# Per-project ownership (uncomment and tune as the team grows)
+# /pull/          @your-username @internet-side-team
+# /push/          @your-username @closed-network-team
+# /.github/       @your-username @devops

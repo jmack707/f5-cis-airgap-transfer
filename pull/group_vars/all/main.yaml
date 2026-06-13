@@ -1,0 +1,125 @@
+---
+# =============================================================================
+# group_vars/all/main.yaml — pull project
+#
+# PURPOSE : Single source of truth for every non-secret value used by the
+#           internet-side artifact collection stage.
+#
+# VERSIONS: All component versions live in ONE PLACE at the top of this
+#           file. Everything else (tags, filenames) is derived from those
+#           variables. To bump a version, change exactly one line.
+#
+# SECRETS : Credentials live in vault.yaml at the repo root.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Component versions — change here, propagates everywhere
+# -----------------------------------------------------------------------------
+#
+# Each variable is the upstream version string used in image tags or
+# Helm chart versions. The naming convention is:
+#   <component>_version       for image tags
+#   <component>_chart_version for Helm chart versions when they differ
+#                              from the image version of the same component
+#
+# Where one component bumps multiple things together (e.g. cert-manager,
+# whose tag and chart version always match), one variable controls all of them.
+
+cis_version:          "2.20.3"      # F5 BIG-IP Container Ingress Services image
+cis_chart_version:    "0.0.35"      # Helm chart for CIS
+
+nginx_plus_version:   "5.3.2"       # NGINX Plus Ingress Controller image
+nginx_chart_version:  "2.1.0"       # Helm chart for the above
+
+cert_manager_version: "v1.19.1"     # cert-manager — all 4 images AND the chart
+                                    # (upstream ships them with the same tag)
+
+nginx_hello_tag:      "plain-text"  # nginx demo image — not semver-versioned
+syslog_ng_version:    "4.8.1"       # syslog-ng image
+
+# -----------------------------------------------------------------------------
+# Output paths
+# -----------------------------------------------------------------------------
+artifact_staging_dir: "{{ (playbook_dir + '/../../artifacts') | realpath }}"
+bundle_filename:      "airgap-bundle.tar.gz"
+helm_chart_dir:       "{{ artifact_staging_dir }}/charts"
+image_tar_dir:        "{{ artifact_staging_dir }}/images"
+
+min_free_disk_gb: 20
+max_bundle_gb:    8
+
+# -----------------------------------------------------------------------------
+# Derivation conventions — referenced by task files (do NOT change casually)
+# -----------------------------------------------------------------------------
+#
+# These are the rules the project uses to turn a (repo, tag) pair into a
+# tarname, and a (chart, version) pair into a filename. Both rules are
+# referenced symbolically below so the convention lives in exactly one
+# place — but task files actually evaluate them inline because Jinja
+# nested variable expansion in group_vars is unreliable.
+#
+# The convention itself:
+#   tarname  = <basename(repo)>_<tag>.tar
+#   filename = <basename(chart)>-<version>.tgz
+#
+# Examples (for reference, not used directly):
+#   jetstack/cert-manager-controller:v1.19.1
+#     → cert-manager-controller_v1.19.1.tar
+#   f5-stable/f5-bigip-ctlr@0.0.35
+#     → f5-bigip-ctlr-0.0.35.tgz
+#
+# Push side MUST use the same convention to key its push_repo maps by
+# basename. See push/group_vars/all/main.yaml.
+
+# -----------------------------------------------------------------------------
+# Docker Hub
+# -----------------------------------------------------------------------------
+dockerhub_registry: "docker.io"
+
+dockerhub_images:
+  - repo: "f5networks/k8s-bigip-ctlr"
+    tag:  "{{ cis_version }}"
+
+  - repo: "nginxdemos/nginx-hello"
+    tag:  "{{ nginx_hello_tag }}"
+
+  - repo: "linuxserver/syslog-ng"
+    tag:  "{{ syslog_ng_version }}"
+
+  # Uncomment when the EE image is published:
+  # - repo: "replaceme/f5_cis_ee"
+  #   tag:  "1.0.0"
+
+# -----------------------------------------------------------------------------
+# Quay.io (public, no auth required)
+# All four cert-manager images move together — one version variable.
+# -----------------------------------------------------------------------------
+quay_registry: "quay.io"
+
+quay_images:
+  - { repo: "jetstack/cert-manager-controller",      tag: "{{ cert_manager_version }}" }
+  - { repo: "jetstack/cert-manager-cainjector",      tag: "{{ cert_manager_version }}" }
+  - { repo: "jetstack/cert-manager-webhook",         tag: "{{ cert_manager_version }}" }
+  - { repo: "jetstack/cert-manager-startupapicheck", tag: "{{ cert_manager_version }}" }
+
+# -----------------------------------------------------------------------------
+# F5 NGINX private registry
+# -----------------------------------------------------------------------------
+nginx_private_registry: "private-registry.nginx.com"
+
+nginx_images:
+  - repo: "nginx-ic/nginx-plus-ingress"
+    tag:  "{{ nginx_plus_version }}"
+
+# -----------------------------------------------------------------------------
+# Helm
+# -----------------------------------------------------------------------------
+helm_repos:
+  - { name: "f5-stable",    url: "https://f5networks.github.io/charts/stable" }
+  - { name: "nginx-stable", url: "https://helm.nginx.com/stable" }
+  - { name: "jetstack",     url: "https://charts.jetstack.io" }
+
+helm_charts:
+  - { chart: "f5-stable/f5-bigip-ctlr",    version: "{{ cis_chart_version }}" }
+  - { chart: "nginx-stable/nginx-ingress", version: "{{ nginx_chart_version }}" }
+  - { chart: "jetstack/cert-manager",      version: "{{ cert_manager_version }}" }

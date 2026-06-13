@@ -1,0 +1,111 @@
+# =============================================================================
+# .github/workflows/release.yml
+#
+# Runs when a tag matching v* is pushed (e.g. v1.0.0, v1.2.3-rc1).
+#
+# Builds two release artifacts — one per project — plus a SHA256SUMS
+# file, then creates a GitHub Release with auto-generated notes from
+# the PRs merged since the previous tag.
+# =============================================================================
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write    # required to create the release and upload assets
+
+jobs:
+
+  build-and-release:
+    name: build-and-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Fetch full history so auto-generated release notes can see
+          # the commits since the previous tag.
+          fetch-depth: 0
+
+      # -----------------------------------------------------------------------
+      # Build pull/ → f5-airgap-pull-vX.Y.Z.zip
+      # -----------------------------------------------------------------------
+      - name: Build pull zip
+        run: |
+          rm -rf /tmp/staging
+          mkdir -p /tmp/staging/f5-airgap-pull dist
+          cp -r pull/. /tmp/staging/f5-airgap-pull/
+
+          # Defensive: strip any vault.yaml that might have leaked in.
+          # The .gitignore should prevent this but defense-in-depth.
+          rm -f /tmp/staging/f5-airgap-pull/vault.yaml
+          rm -f /tmp/staging/f5-airgap-pull/vault.yml
+
+          (cd /tmp/staging && \
+            zip -rq "$GITHUB_WORKSPACE/dist/f5-airgap-pull-${GITHUB_REF_NAME}.zip" f5-airgap-pull)
+
+      # -----------------------------------------------------------------------
+      # Build push/ → f5-airgap-push-vX.Y.Z.zip
+      # -----------------------------------------------------------------------
+      - name: Build push zip
+        run: |
+          rm -rf /tmp/staging
+          mkdir -p /tmp/staging/f5-airgap-push
+          cp -r push/. /tmp/staging/f5-airgap-push/
+          rm -f /tmp/staging/f5-airgap-push/vault.yaml
+          rm -f /tmp/staging/f5-airgap-push/vault.yml
+
+          (cd /tmp/staging && \
+            zip -rq "$GITHUB_WORKSPACE/dist/f5-airgap-push-${GITHUB_REF_NAME}.zip" f5-airgap-push)
+
+      # -----------------------------------------------------------------------
+      # Compute SHA-256 checksums for both artifacts
+      # -----------------------------------------------------------------------
+      - name: Compute SHA256SUMS
+        run: |
+          cd dist
+          sha256sum *.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      # -----------------------------------------------------------------------
+      # Final safety check — block release if a vault.yaml made it in
+      # -----------------------------------------------------------------------
+      - name: Verify no vault.yaml in zips
+        run: |
+          for z in dist/*.zip; do
+            if unzip -l "$z" | grep -E 'vault\.yaml$'; then
+              echo "ABORT: $z contains vault.yaml"
+              exit 1
+            fi
+          done
+          echo "Confirmed: no vault.yaml in any release artifact."
+
+      # -----------------------------------------------------------------------
+      # Create the GitHub Release with auto-generated notes
+      # -----------------------------------------------------------------------
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/f5-airgap-pull-${{ github.ref_name }}.zip
+            dist/f5-airgap-push-${{ github.ref_name }}.zip
+            dist/SHA256SUMS
+          generate_release_notes: true
+          body: |
+            ## Operator downloads
+
+            | Side | Artifact |
+            |------|----------|
+            | Internet-side (artifact collection) | `f5-airgap-pull-${{ github.ref_name }}.zip` |
+            | Closed-network (registry import)    | `f5-airgap-push-${{ github.ref_name }}.zip` |
+
+            Verify integrity:
+
+            ```bash
+            sha256sum -c SHA256SUMS
+            ```
+
+            See each project's `README.md` for setup and operation, or
+            `ARCHITECTURE.md` for engineering reference.

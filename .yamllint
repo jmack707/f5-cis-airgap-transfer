@@ -1,0 +1,35 @@
+# =============================================================================
+# .yamllint — project-wide YAML lint config
+#
+# We use the 'relaxed' base + a few targeted overrides. The point of this
+# lint is to catch real syntax errors, not to bikeshed line length.
+# =============================================================================
+
+extends: relaxed
+
+rules:
+  # Doc comments in task headers are long by design — don't fail on them.
+  line-length:
+    max: 200
+    level: warning
+
+  # We use lots of inline comments; allow comment indentation that doesn't
+  # match the surrounding code (e.g. block-style # comments).
+  comments-indentation: disable
+  comments:
+    min-spaces-from-content: 1
+
+  # Permit either '0644' string or 0644 number for file modes — Ansible accepts both.
+  octal-values:
+    forbid-implicit-octal: false
+    forbid-explicit-octal: false
+
+  # Trailing whitespace is annoying but not breaking — warn only.
+  trailing-spaces:
+    level: warning
+
+  # Allow truthy values written as 'true'/'false' (which is our convention)
+  # without requiring 'yes'/'no' or vice-versa.
+  truthy:
+    allowed-values: ['true', 'false']
+    check-keys: false

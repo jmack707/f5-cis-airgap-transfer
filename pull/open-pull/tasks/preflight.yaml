@@ -1,0 +1,85 @@
+---
+# =============================================================================
+# open-pull/tasks/preflight.yaml
+#
+# PURPOSE
+#   Verifies the internet-side host can perform the pull end-to-end
+#   before any registry login or image pull happens.
+#
+# INPUTS (vars)
+#   artifact_staging_dir     str    Where the bundle will be written
+#   image_tar_dir            str    Subdir for image .tar files
+#   helm_chart_dir           str    Subdir for chart .tgz files
+#   min_free_disk_gb         int    Required free space (preflight threshold)
+#
+# OUTPUTS (set_fact)
+#   staging_mount            dict   Mount entry containing artifact_staging_dir
+#   tool_checks              list   which-output for each required CLI
+#
+# SIDE EFFECTS
+#   Creates artifact_staging_dir, image_tar_dir, helm_chart_dir
+#   (mode 0755, current user). Nothing else is modified.
+#
+# IDEMPOTENCY
+#   Safe to re-run; mkdir is conditional.
+#
+# FAILURE MODES
+#   - Required CLI missing               → install before re-running
+#                                            (setup.sh covers this)
+#   - Insufficient disk space            → free space or lower threshold
+#
+# DESIGN NOTES
+#   The disk check looks at the filesystem containing artifact_staging_dir,
+#   not the root partition. If artifact_staging_dir is on a separate mount
+#   (USB drive, secondary partition), the check measures THAT filesystem.
+# =============================================================================
+
+- name: Verify required CLI tools are installed
+  ansible.builtin.command:
+    cmd: "which {{ item }}"
+  loop:
+    - docker         # docker save (image export)
+    - helm           # helm pull (chart download)
+    - tar            # bundle creation
+    - sha256sum      # per-file checksum computation
+  changed_when: false
+  register: tool_checks
+  failed_when: tool_checks.rc != 0
+  tags: [preflight]
+
+- name: Identify filesystem mount for artifact staging directory
+  ansible.builtin.set_fact:
+    staging_mount: >-
+      {{ ansible_facts['mounts']
+         | selectattr('mount', 'in', artifact_staging_dir)
+         | sort(attribute='mount') | last }}
+  tags: [preflight]
+  # Walks the mount table to find the longest mount prefix containing
+  # artifact_staging_dir. If artifact_staging_dir is /mnt/usb/foo and
+  # /mnt/usb is its own mount, the disk check uses /mnt/usb's
+  # filesystem — not the root partition.
+
+- name: Assert sufficient free disk space
+  ansible.builtin.assert:
+    that:
+      - (staging_mount.size_available | int) >= (min_free_disk_gb | int * 1024 * 1024 * 1024)
+    fail_msg: >-
+      Insufficient disk space on {{ staging_mount.mount }}.
+      Available : {{ (staging_mount.size_available | int / 1073741824) | round(1) }} GB
+      Required  : {{ min_free_disk_gb }} GB
+      Free up space or lower min_free_disk_gb in group_vars/all/main.yaml.
+    success_msg: >-
+      Disk check passed — {{ (staging_mount.size_available | int / 1073741824) | round(1) }} GB
+      available on {{ staging_mount.mount }}.
+  tags: [preflight]
+
+- name: Ensure staging directories exist
+  ansible.builtin.file:
+    path:  "{{ item }}"
+    state: directory
+    mode:  "0755"
+  loop:
+    - "{{ artifact_staging_dir }}"
+    - "{{ image_tar_dir }}"
+    - "{{ helm_chart_dir }}"
+  tags: [preflight]

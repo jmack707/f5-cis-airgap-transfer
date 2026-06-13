@@ -1,0 +1,71 @@
+---
+# =============================================================================
+# open-pull/tasks/pull_nginx_registry.yaml
+#
+# PURPOSE
+#   Authenticates to F5's private NGINX registry using a JWT subscription
+#   token, pulls every image in nginx_images, saves each as a .tar file,
+#   and logs out unconditionally at the end.
+#
+# DERIVATION
+#   tarname = "{{ item.repo | basename }}_{{ item.tag }}.tar"
+#
+# JWT AUTH (F5-specific)
+#   docker login takes the FULL .jwt file contents as username and the
+#   literal string "none" as password. That's not a placeholder — F5's
+#   registry actually expects "none" as the literal password value.
+# =============================================================================
+
+- name: Log in to F5 NGINX private registry
+  community.docker.docker_login:
+    registry_url: "{{ nginx_private_registry }}"
+    username:     "{{ vault_nginx_jwt_token }}"
+    password:     "none"
+    reauthorize:  true
+  no_log: true
+  tags: [pull, pull_nginx]
+
+- name: Pull NGINX images
+  community.docker.docker_image:
+    name:         "{{ nginx_private_registry }}/{{ item.repo }}"
+    tag:          "{{ item.tag }}"
+    source:       pull
+    force_source: true
+  loop: "{{ nginx_images }}"
+  loop_control:
+    label: "{{ item.repo }}:{{ item.tag }}"
+  tags: [pull, pull_nginx]
+
+- name: Save NGINX images to .tar files
+  community.docker.docker_image:
+    name:         "{{ nginx_private_registry }}/{{ item.repo }}"
+    tag:          "{{ item.tag }}"
+    source:       local
+    archive_path: "{{ image_tar_dir }}/{{ item.repo | basename }}_{{ item.tag }}.tar"
+  loop: "{{ nginx_images }}"
+  loop_control:
+    label: "{{ item.repo | basename }}_{{ item.tag }}.tar"
+  tags: [pull, pull_nginx]
+
+- name: Stat NGINX image .tar files
+  ansible.builtin.stat:
+    path: "{{ image_tar_dir }}/{{ item.repo | basename }}_{{ item.tag }}.tar"
+  register: nginx_tar_stats
+  loop: "{{ nginx_images }}"
+  loop_control:
+    label: "{{ item.repo | basename }}_{{ item.tag }}.tar"
+  tags: [pull, pull_nginx]
+
+- name: Assert all NGINX .tar files are present
+  ansible.builtin.assert:
+    that:
+      - nginx_tar_stats.results | selectattr('stat.exists', 'equalto', false) | list | length == 0
+    fail_msg: "Missing NGINX image tars (check earlier task output for the failed item)"
+  tags: [pull, pull_nginx]
+
+- name: Log out of F5 NGINX private registry
+  community.docker.docker_login:
+    registry_url: "{{ nginx_private_registry }}"
+    state: absent
+  no_log: true
+  tags: [pull, pull_nginx]

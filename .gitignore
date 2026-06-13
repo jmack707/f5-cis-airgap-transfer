@@ -1,0 +1,59 @@
+# =============================================================================
+# .gitignore — f5-airgap-k8s
+# =============================================================================
+
+# --- Secrets (NEVER commit) --------------------------------------------------
+# Vault files in any project directory. Encrypted is no excuse — keep them
+# out of the repo entirely.
+**/vault.yaml
+**/vault.yml
+**/*.vault
+.vault_pass
+.ansible-vault-pass
+.ansible-vault-pass.txt
+
+# --- Build / run outputs -----------------------------------------------------
+# Pull stage writes artifacts here; never commit these.
+**/artifacts/
+**/airgap-bundle.tar.gz
+**/airgap-bundle.tar.gz.sha256
+**/manifest.json
+**/staging/
+
+# Push stage staging area
+/srv/airgap-staging/
+
+# Release build outputs
+dist/
+
+# --- Ansible runtime --------------------------------------------------------
+*.retry
+.ansible/
+**/.ansible/
+ansible_collections/
+
+# Downloaded collections (use collections/requirements.yml to install)
+**/collections/ansible_collections/
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# --- Editor / OS scratch -----------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.bak
+
+# --- Local-only overrides ---------------------------------------------------
+# Operators sometimes maintain a local override; keep these out of git.
+**/group_vars/all/local.yaml
+**/group_vars/all/override.yaml

@@ -1,0 +1,87 @@
+---
+# =============================================================================
+# open-pull/tasks/pull_dockerhub.yaml
+#
+# PURPOSE
+#   Authenticates to Docker Hub, pulls every image listed in
+#   dockerhub_images, saves each as a .tar file under image_tar_dir,
+#   and logs out unconditionally at the end.
+#
+# INPUTS (vars)
+#   dockerhub_registry           str    Registry FQDN (always "docker.io")
+#   dockerhub_images             list   Image definitions (repo, tag)
+#   image_tar_dir                str    Where .tar files are written
+#   vault_dockerhub_username     str    From vault
+#   vault_dockerhub_password     str    From vault (or PAT)
+#
+# OUTPUTS
+#   <image_tar_dir>/<basename(repo)>_<tag>.tar for every image.
+#
+# DERIVATION
+#   tarname = "{{ item.repo | basename }}_{{ item.tag }}.tar"
+#   Computed inline in every task that touches it. The push side joins
+#   on this same convention via image_push_map (keyed by basename only).
+#
+# SIDE EFFECTS / IDEMPOTENCY / FAILURE MODES
+#   See header docs in the pre-refactor version (unchanged in behavior).
+# =============================================================================
+
+- name: Log in to Docker Hub
+  community.docker.docker_login:
+    registry_url: "{{ dockerhub_registry }}"
+    username:     "{{ vault_dockerhub_username }}"
+    password:     "{{ vault_dockerhub_password }}"
+    reauthorize:  true
+  no_log: true
+  tags: [pull, pull_dockerhub]
+
+- name: Pull Docker Hub images
+  community.docker.docker_image:
+    name:         "{{ dockerhub_registry }}/{{ item.repo }}"
+    tag:          "{{ item.tag }}"
+    source:       pull
+    force_source: true
+  loop: "{{ dockerhub_images }}"
+  loop_control:
+    label: "{{ item.repo }}:{{ item.tag }}"
+  tags: [pull, pull_dockerhub]
+
+- name: Save Docker Hub images to .tar files
+  community.docker.docker_image:
+    name:         "{{ dockerhub_registry }}/{{ item.repo }}"
+    tag:          "{{ item.tag }}"
+    source:       local
+    archive_path: "{{ image_tar_dir }}/{{ item.repo | basename }}_{{ item.tag }}.tar"
+  loop: "{{ dockerhub_images }}"
+  loop_control:
+    label: "{{ item.repo | basename }}_{{ item.tag }}.tar"
+  tags: [pull, pull_dockerhub]
+
+- name: Stat Docker Hub image .tar files
+  ansible.builtin.stat:
+    path: "{{ image_tar_dir }}/{{ item.repo | basename }}_{{ item.tag }}.tar"
+  register: dh_tar_stats
+  loop: "{{ dockerhub_images }}"
+  loop_control:
+    label: "{{ item.repo | basename }}_{{ item.tag }}.tar"
+  tags: [pull, pull_dockerhub]
+
+- name: Assert all Docker Hub .tar files are present
+  ansible.builtin.assert:
+    that:
+      - dh_tar_stats.results | selectattr('stat.exists', 'equalto', false) | list | length == 0
+    fail_msg: >-
+      Missing Docker Hub image tars:
+      {{ dh_tar_stats.results
+         | selectattr('stat.exists', 'equalto', false)
+         | map(attribute='item')
+         | map('regex_replace', '^.*$', '\\g<0>')
+         | list }}
+  tags: [pull, pull_dockerhub]
+
+- name: Log out of Docker Hub
+  community.docker.docker_login:
+    registry_url: "{{ dockerhub_registry }}"
+    state: absent
+  no_log: true
+  tags: [pull, pull_dockerhub]

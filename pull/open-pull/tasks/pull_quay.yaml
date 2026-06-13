@@ -1,0 +1,49 @@
+---
+# =============================================================================
+# open-pull/tasks/pull_quay.yaml
+#
+# PURPOSE
+#   Pulls cert-manager images from quay.io (public, no auth required)
+#   and saves each as a .tar file.
+#
+# DERIVATION
+#   tarname = "{{ item.repo | basename }}_{{ item.tag }}.tar"
+# =============================================================================
+
+- name: Pull Quay.io images
+  community.docker.docker_image:
+    name:         "{{ quay_registry }}/{{ item.repo }}"
+    tag:          "{{ item.tag }}"
+    source:       pull
+    force_source: true
+  loop: "{{ quay_images }}"
+  loop_control:
+    label: "{{ item.repo }}:{{ item.tag }}"
+  tags: [pull, pull_quay]
+
+- name: Save Quay.io images to .tar files
+  community.docker.docker_image:
+    name:         "{{ quay_registry }}/{{ item.repo }}"
+    tag:          "{{ item.tag }}"
+    source:       local
+    archive_path: "{{ image_tar_dir }}/{{ item.repo | basename }}_{{ item.tag }}.tar"
+  loop: "{{ quay_images }}"
+  loop_control:
+    label: "{{ item.repo | basename }}_{{ item.tag }}.tar"
+  tags: [pull, pull_quay]
+
+- name: Stat Quay.io image .tar files
+  ansible.builtin.stat:
+    path: "{{ image_tar_dir }}/{{ item.repo | basename }}_{{ item.tag }}.tar"
+  register: quay_tar_stats
+  loop: "{{ quay_images }}"
+  loop_control:
+    label: "{{ item.repo | basename }}_{{ item.tag }}.tar"
+  tags: [pull, pull_quay]
+
+- name: Assert all Quay.io .tar files are present
+  ansible.builtin.assert:
+    that:
+      - quay_tar_stats.results | selectattr('stat.exists', 'equalto', false) | list | length == 0
+    fail_msg: "Missing Quay.io image tars (check earlier task output for the failed item)"
+  tags: [pull, pull_quay]

@@ -1,0 +1,226 @@
+---
+# =============================================================================
+# ccn-push/tasks/preflight.yaml
+#
+# PURPOSE
+#   Verifies the closed-network host can perform the push end-to-end before
+#   touching any state. Every check here is read-only and runs against
+#   inputs the operator provided (bundle file, host configuration, registry
+#   endpoint). If any check fails, the playbook aborts without having
+#   changed Docker, the filesystem, or the registry.
+#
+# INPUTS (vars)
+#   ccn_bundle_incoming_path   str    Filesystem path to airgap-bundle.tar.gz
+#   ccn_staging_dir            str    Where the bundle will be extracted later
+#   ccn_registry_host          str    Registry FQDN or IP
+#   ccn_registry_port          int    Registry TCP port
+#   ccn_registry_insecure      bool   True = HTTP profile, False = HTTPS
+#   ccn_registry_ca_path       str    Path to CA cert (read only when HTTPS)
+#   ccn_min_free_disk_gb       int    Required free space on staging filesystem
+#
+# OUTPUTS (set_fact)
+#   bundle_stat                Stat result of the bundle file
+#   bundle_sha_stat            Stat of the companion .sha256 file
+#   helm_version_result        Helm version string (stripped of leading 'v')
+#   staging_mount              The mount entry for ccn_staging_dir's filesystem
+#   tool_checks                Per-tool which-output (informational)
+#
+# SIDE EFFECTS
+#   - Creates ccn_staging_dir if it doesn't exist (mode 0755, current user)
+#   - Touches nothing else; no system config is modified
+#
+# IDEMPOTENCY
+#   Safe to re-run any number of times. The only mutation (mkdir) is
+#   conditional and produces "ok" on subsequent runs.
+#
+# FAILURE MODES
+#   - Bundle missing                         → operator must place it at the configured path
+#   - Outer checksum mismatch                → bundle corrupted in transit; re-transfer
+#   - Required CLI missing                   → install before re-running (setup.sh assists)
+#   - Helm < 3.8.0                           → OCI push unsupported on older versions
+#   - CA file missing/unreadable (HTTPS)     → fix path or permissions in group_vars
+#   - CA not PEM-encoded (HTTPS)             → convert DER → PEM with openssl x509 -inform DER
+#   - Insufficient disk space                → free space or lower ccn_min_free_disk_gb
+#   - Registry unreachable (TCP)             → check firewall, DNS, registry container status
+#   - Registry HTTP API returns non-2xx/401  → check `docker logs <registry>` on the registry host
+#
+# DESIGN NOTES
+#   Helm version is checked by parsing `helm version --short` rather than
+#   using a Helm-specific module because we want a single dependency floor
+#   (3.8.0 for OCI) without pulling in extra collections.
+#
+#   The TCP wait_for is short (10s) and runs even in the HTTP profile, so
+#   a firewall or DNS issue surfaces here before docker/helm try to use
+#   the endpoint and produce noisier errors.
+#
+#   The HTTP /v2/ check accepts 200 *and* 401. Distribution registries
+#   conventionally return 401 with a WWW-Authenticate header on /v2/ when
+#   auth is enabled but no credentials are presented; either way the API
+#   is responding, which is what we're verifying.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Bundle existence + outer-checksum verification
+# -----------------------------------------------------------------------------
+
+- name: Verify bundle file exists
+  ansible.builtin.stat:
+    path: "{{ ccn_bundle_incoming_path }}"
+  register: bundle_stat
+  failed_when: not bundle_stat.stat.exists
+  # We use stat + failed_when rather than `assert + file exists test` so
+  # the registered variable is available to later tasks that may want
+  # bundle size or mtime for logging.
+
+- name: Verify bundle companion .sha256 file exists
+  ansible.builtin.stat:
+    path: "{{ ccn_bundle_incoming_path }}.sha256"
+  register: bundle_sha_stat
+  # The .sha256 is optional — we don't fail if it's missing, but if it
+  # is present we use it for an early integrity check that catches
+  # transit corruption before anything else.
+
+- name: Verify bundle SHA-256 matches companion checksum
+  ansible.builtin.command:
+    cmd:   "sha256sum -c {{ ccn_bundle_incoming_path | basename }}.sha256"
+    chdir: "{{ ccn_bundle_incoming_path | dirname }}"
+  register: bundle_sha_check
+  changed_when: false   # Verification is read-only; never report "changed"
+  when: bundle_sha_stat.stat.exists
+  # `sha256sum -c` returns non-zero on mismatch, which Ansible treats as
+  # task failure. That's the behavior we want.
+
+# -----------------------------------------------------------------------------
+# Host tooling — fail fast if anything required is missing
+# -----------------------------------------------------------------------------
+
+- name: Verify required CLI tools are installed (base)
+  ansible.builtin.command:
+    cmd: "which {{ item }}"
+  loop:
+    - docker         # docker load, tag, push
+    - helm           # OCI chart push (3.8.0+ check below)
+    - tar            # bundle extraction
+    - sha256sum      # per-file checksum verification (verify_manifest.yaml)
+  changed_when: false
+  register: tool_checks
+  failed_when: tool_checks.rc != 0
+
+- name: Verify openssl is present (HTTPS only)
+  ansible.builtin.command:
+    cmd: "which openssl"
+  changed_when: false
+  when: not (ccn_registry_insecure | bool)
+  # Only the HTTPS path uses openssl (to validate the CA is PEM-encoded
+  # rather than DER or some other format). The HTTP path has no TLS to
+  # validate, so we don't require openssl there.
+
+- name: Determine Helm version
+  ansible.builtin.command:
+    cmd: helm version --short --template='{{ "{{" }}.Version{{ "}}" }}'
+  register: helm_version_result
+  changed_when: false
+  # --short --template avoids the extra "go version" lines and gives us
+  # just "v3.20.2" (or similar) so the version compare below is simple.
+
+- name: Assert Helm is >= 3.8.0 (required for OCI push)
+  ansible.builtin.assert:
+    that:
+      - helm_version_result.stdout | regex_replace('^v', '') is version('3.8.0', '>=')
+    fail_msg: >-
+      Helm {{ helm_version_result.stdout }} is too old for OCI registry push.
+      Upgrade to Helm 3.8.0 or newer:
+        curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    success_msg: "Helm {{ helm_version_result.stdout }} supports OCI push."
+  # Helm 3.8.0 made `helm push` / `helm registry login` generally available
+  # for OCI artifacts. 3.7.x had it behind an experimental env var. Older
+  # versions can't push to OCI at all.
+
+# -----------------------------------------------------------------------------
+# HTTPS-only checks (CA file validity)
+# -----------------------------------------------------------------------------
+
+- name: Verify private CA certificate exists and is readable (HTTPS only)
+  ansible.builtin.stat:
+    path: "{{ ccn_registry_ca_path }}"
+  register: ca_stat
+  failed_when: not ca_stat.stat.exists or not ca_stat.stat.readable
+  when: not (ccn_registry_insecure | bool)
+
+- name: Verify CA certificate is PEM-encoded (HTTPS only)
+  ansible.builtin.command:
+    cmd: "openssl x509 -in {{ ccn_registry_ca_path }} -noout -subject"
+  register: ca_check
+  changed_when: false
+  failed_when: ca_check.rc != 0
+  when: not (ccn_registry_insecure | bool)
+  # openssl exits non-zero on a non-PEM file, with -noout suppressing
+  # any cert content leaking to the playbook log. We only need the
+  # parse to succeed; the actual subject is informational.
+
+# -----------------------------------------------------------------------------
+# Filesystem capacity check on the staging directory's mount
+# -----------------------------------------------------------------------------
+
+- name: Identify filesystem mount for staging directory
+  ansible.builtin.set_fact:
+    staging_mount: >-
+      {{ ansible_facts['mounts']
+         | selectattr('mount', 'in', ccn_staging_dir)
+         | sort(attribute='mount') | last }}
+  # Walks the mount table looking for the longest mount prefix that
+  # contains ccn_staging_dir. If /srv is its own mount, we get /srv;
+  # otherwise we get /. This is the filesystem that needs the free
+  # space, not the root partition.
+
+- name: Assert sufficient free disk space
+  ansible.builtin.assert:
+    that:
+      - (staging_mount.size_available | int) >= (ccn_min_free_disk_gb | int * 1024 * 1024 * 1024)
+    fail_msg: >-
+      Insufficient disk space on {{ staging_mount.mount }}.
+      Available : {{ (staging_mount.size_available | int / 1073741824) | round(1) }} GB
+      Required  : {{ ccn_min_free_disk_gb }} GB
+    success_msg: >-
+      Disk check passed — {{ (staging_mount.size_available | int / 1073741824) | round(1) }} GB
+      available on {{ staging_mount.mount }}.
+
+# -----------------------------------------------------------------------------
+# Registry reachability
+# -----------------------------------------------------------------------------
+
+- name: Test TCP connectivity to registry endpoint
+  ansible.builtin.wait_for:
+    host:    "{{ ccn_registry_host }}"
+    port:    "{{ ccn_registry_port }}"
+    timeout: 10
+    state:   started
+  # Short timeout because we want fast failure. The registry should
+  # either be up and reachable or there's a network problem the operator
+  # needs to fix before continuing.
+
+- name: Verify registry HTTP/HTTPS API responds (both profiles)
+  ansible.builtin.uri:
+    url: "{{ 'http' if (ccn_registry_insecure | bool) else 'https' }}://{{ ccn_registry_endpoint }}/v2/"
+    status_code: [200, 401]
+    return_content: false
+    validate_certs: "{{ not (ccn_registry_insecure | bool) }}"
+    ca_path: "{{ ccn_registry_ca_path if not (ccn_registry_insecure | bool) else omit }}"
+  register: registry_api_check
+  # /v2/ is the registry's identity endpoint per the OCI distribution
+  # spec. 200 = anonymous read OK. 401 = auth required (response carries
+  # WWW-Authenticate). Either proves the registry process is alive and
+  # speaking the API. We accept both because we don't know yet which
+  # profile applies, and login/push will fail more loudly if auth is
+  # wrong. For HTTPS we pass the same CA we already validated above so
+  # the check is genuinely end-to-end.
+
+- name: Ensure staging directory exists
+  ansible.builtin.file:
+    path:  "{{ ccn_staging_dir }}"
+    state: directory
+    mode:  "0755"
+  # become: true is intentionally NOT used. If the operator can't create
+  # the staging directory as themselves, they should either run with
+  # become elsewhere or change ccn_staging_dir in group_vars to a path
+  # they own. Asking for root just to make a working directory is wrong.

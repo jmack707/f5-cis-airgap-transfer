@@ -1,0 +1,245 @@
+---
+# =============================================================================
+# open-pull/tasks/bundle.yaml
+#
+# PURPOSE
+#   Combines all image .tar files and chart .tgz files into a single
+#   compressed bundle for transfer. Writes a provenance manifest with
+#   per-file SHA-256 checksums alongside the bundle.
+#
+# INPUTS (vars)
+#   artifact_staging_dir     str    Where bundle + manifest are written
+#   bundle_filename          str    Output file name
+#   image_tar_dir            str    Where image .tar files live
+#   helm_chart_dir           str    Where chart .tgz files live
+#   max_bundle_gb            int    Reject bundle if it exceeds this size
+#   dockerhub_images, quay_images, nginx_images
+#                            list   Pulled in earlier tasks
+#   helm_charts              list   Pulled in earlier tasks
+#
+# OUTPUTS
+#   <artifact_staging_dir>/manifest.json
+#   <artifact_staging_dir>/<bundle_filename>
+#   <artifact_staging_dir>/<bundle_filename>.sha256
+#
+# DERIVATION CONVENTIONS
+#   tarname  = "{{ item.repo | basename }}_{{ item.tag }}.tar"
+#   filename = "{{ item.chart | basename }}-{{ item.version }}.tgz"
+#
+#   Both projects use these same expressions; the manifest carries the
+#   computed values so the push side reads them as plain strings.
+#
+# CRITICAL DESIGN INVARIANT
+#   The manifest MUST be rewritten any time an image .tar is rebuilt.
+#   The push stage verifies every .tar's SHA-256 against the manifest;
+#   if they get out of sync, the push aborts.
+#
+#   This task always rewrites both the manifest AND the bundle in the
+#   same play, so the contract is preserved automatically.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Echo the computed tarnames/filenames — makes derivation visible to the
+# operator. If any derivation looks wrong, the rest of this task will
+# fail clearly.
+# -----------------------------------------------------------------------------
+
+- name: Show computed image tarnames (one per image)
+  ansible.builtin.debug:
+    msg: "{{ item.repo }}:{{ item.tag }} → {{ item.repo | basename }}_{{ item.tag }}.tar"
+  loop: "{{ dockerhub_images + quay_images + nginx_images }}"
+  loop_control:
+    label: "{{ item.repo | basename }}_{{ item.tag }}.tar"
+  tags: [bundle]
+
+- name: Show computed chart filenames
+  ansible.builtin.debug:
+    msg: "{{ item.chart }}@{{ item.version }} → {{ item.chart | basename }}-{{ item.version }}.tgz"
+  loop: "{{ helm_charts }}"
+  loop_control:
+    label: "{{ item.chart | basename }}-{{ item.version }}.tgz"
+  tags: [bundle]
+
+# -----------------------------------------------------------------------------
+# Pre-bundle existence checks — fail fast if any input is missing
+# -----------------------------------------------------------------------------
+
+- name: Pre-bundle — assert all image .tar files present
+  ansible.builtin.assert:
+    that:
+      - (image_tar_dir + '/' + (item.repo | basename) + '_' + item.tag + '.tar') is exists
+    fail_msg: >-
+      Expected image tar not found:
+      {{ image_tar_dir }}/{{ item.repo | basename }}_{{ item.tag }}.tar
+  loop: "{{ dockerhub_images + quay_images + nginx_images }}"
+  loop_control:
+    label: "{{ item.repo | basename }}_{{ item.tag }}.tar"
+  tags: [bundle]
+
+- name: Pre-bundle — assert all chart archives present
+  ansible.builtin.assert:
+    that:
+      - (helm_chart_dir + '/' + (item.chart | basename) + '-' + item.version + '.tgz') is exists
+    fail_msg: >-
+      Expected chart archive not found:
+      {{ helm_chart_dir }}/{{ item.chart | basename }}-{{ item.version }}.tgz
+  loop: "{{ helm_charts }}"
+  loop_control:
+    label: "{{ item.chart | basename }}-{{ item.version }}.tgz"
+  tags: [bundle]
+
+# -----------------------------------------------------------------------------
+# Per-file SHA-256 — the load-bearing manifest contract
+# -----------------------------------------------------------------------------
+
+- name: Compute SHA-256 for each image .tar
+  ansible.builtin.stat:
+    path:               "{{ image_tar_dir }}/{{ item.repo | basename }}_{{ item.tag }}.tar"
+    checksum_algorithm: sha256
+    get_checksum:       true
+  loop: "{{ dockerhub_images + quay_images + nginx_images }}"
+  loop_control:
+    label: "{{ item.repo | basename }}_{{ item.tag }}.tar"
+  register: image_stat_results
+  tags: [bundle]
+
+- name: Compute SHA-256 for each Helm chart .tgz
+  ansible.builtin.stat:
+    path:               "{{ helm_chart_dir }}/{{ item.chart | basename }}-{{ item.version }}.tgz"
+    checksum_algorithm: sha256
+    get_checksum:       true
+  loop: "{{ helm_charts }}"
+  loop_control:
+    label: "{{ item.chart | basename }}-{{ item.version }}.tgz"
+  register: chart_stat_results
+  tags: [bundle]
+
+# -----------------------------------------------------------------------------
+# Build the manifest entries — join image/chart definitions with their
+# checksums, the source registry, and the computed tarname/filename. The
+# push side reads this exact shape.
+# -----------------------------------------------------------------------------
+
+- name: Initialize images list
+  ansible.builtin.set_fact:
+    images_with_checksums: []
+  tags: [bundle]
+
+- name: Build manifest entry per image (with computed tarname)
+  ansible.builtin.set_fact:
+    images_with_checksums: "{{ images_with_checksums + [entry] }}"
+  vars:
+    # The combined source list — order must match image_stat_results
+    raw_image: "{{ (dockerhub_images + quay_images + nginx_images)[ansible_loop.index0] }}"
+    # Which registry does this image come from? Position in the
+    # combined list determines this.
+    registry_lookup: >-
+      {{ ([dockerhub_registry] * (dockerhub_images | length))
+        + ([quay_registry] * (quay_images | length))
+        + ([nginx_private_registry] * (nginx_images | length)) }}
+    # Compute the tarname per the project-wide convention
+    computed_tarname: "{{ raw_image.repo | basename }}_{{ raw_image.tag }}.tar"
+    entry:
+      registry: "{{ registry_lookup[ansible_loop.index0] }}"
+      repo:     "{{ raw_image.repo }}"
+      tag:      "{{ raw_image.tag }}"
+      tarname:  "{{ computed_tarname }}"
+      sha256:   "{{ item.stat.checksum }}"
+  loop: "{{ image_stat_results.results }}"
+  loop_control:
+    extended: true
+    label: "{{ item.item.repo | basename }}_{{ item.item.tag }}.tar"
+  tags: [bundle]
+
+- name: Build manifest entry per chart (with computed filename)
+  ansible.builtin.set_fact:
+    charts_with_checksums: "{{ charts_with_checksums | default([]) + [entry] }}"
+  vars:
+    entry:
+      chart:    "{{ item.item.chart }}"
+      version:  "{{ item.item.version }}"
+      filename: "{{ item.item.chart | basename }}-{{ item.item.version }}.tgz"
+      sha256:   "{{ item.stat.checksum }}"
+  loop: "{{ chart_stat_results.results }}"
+  loop_control:
+    label: "{{ item.item.chart | basename }}-{{ item.item.version }}.tgz"
+  tags: [bundle]
+
+# -----------------------------------------------------------------------------
+# Write the manifest
+# -----------------------------------------------------------------------------
+
+- name: Write bundle manifest.json
+  ansible.builtin.copy:
+    content: "{{ manifest | to_nice_json }}\n"
+    dest:    "{{ artifact_staging_dir }}/manifest.json"
+    mode:    "0644"
+  vars:
+    manifest:
+      generated_at:    "{{ ansible_facts['date_time']['iso8601'] }}"
+      bundle_filename: "{{ bundle_filename }}"
+      images:          "{{ images_with_checksums }}"
+      charts:          "{{ charts_with_checksums }}"
+  tags: [bundle]
+
+# -----------------------------------------------------------------------------
+# Create the bundle and verify size
+# -----------------------------------------------------------------------------
+
+- name: Create air-gap bundle archive
+  ansible.builtin.command:
+    cmd: >
+      tar -czf {{ artifact_staging_dir }}/{{ bundle_filename }}
+      -C {{ artifact_staging_dir }}
+      manifest.json
+      images/
+      charts/
+  changed_when: true
+  tags: [bundle]
+
+- name: Stat bundle archive
+  ansible.builtin.stat:
+    path: "{{ artifact_staging_dir }}/{{ bundle_filename }}"
+  register: bundle_stat
+  tags: [bundle]
+
+- name: Assert bundle size is within max_bundle_gb
+  ansible.builtin.assert:
+    that:
+      - (bundle_stat.stat.size | int) <= (max_bundle_gb | int * 1024 * 1024 * 1024)
+    fail_msg: >-
+      Bundle exceeds maximum size.
+      Bundle size : {{ (bundle_stat.stat.size | int / 1073741824) | round(2) }} GB
+      Maximum     : {{ max_bundle_gb }} GB
+    success_msg: >-
+      Bundle size check passed — {{ (bundle_stat.stat.size | int / 1073741824) | round(2) }} GB
+      (limit: {{ max_bundle_gb }} GB).
+  tags: [bundle]
+
+# -----------------------------------------------------------------------------
+# Outer SHA-256 — catches transit corruption on the receiving end
+# -----------------------------------------------------------------------------
+
+- name: Generate SHA-256 checksum for the bundle
+  ansible.builtin.command:
+    cmd:   "sha256sum {{ bundle_filename }}"
+    chdir: "{{ artifact_staging_dir }}"
+  register: bundle_sha256
+  changed_when: false
+  tags: [bundle]
+
+- name: Write bundle SHA-256 checksum file
+  ansible.builtin.copy:
+    content: "{{ bundle_sha256.stdout }}\n"
+    dest:    "{{ artifact_staging_dir }}/{{ bundle_filename }}.sha256"
+    mode:    "0644"
+  tags: [bundle]
+
+- name: Report bundle location
+  ansible.builtin.debug:
+    msg:
+      - "Bundle  : {{ artifact_staging_dir }}/{{ bundle_filename }}"
+      - "Size    : {{ (bundle_stat.stat.size | int / 1073741824) | round(2) }} GB"
+      - "SHA-256 : {{ bundle_sha256.stdout.split()[0] }}"
+      - "Manifest: {{ artifact_staging_dir }}/manifest.json (with per-file checksums)"
+  tags: [bundle]

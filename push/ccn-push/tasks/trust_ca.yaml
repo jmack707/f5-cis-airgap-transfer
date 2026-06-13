@@ -1,0 +1,94 @@
+---
+# =============================================================================
+# ccn-push/tasks/trust_ca.yaml
+#
+# PURPOSE
+#   Installs a private CA certificate into Docker's per-registry trust
+#   directory so the daemon validates the registry's TLS cert without
+#   needing --insecure-registry. Only relevant when the registry uses
+#   HTTPS — skipped entirely on the HTTP profile.
+#
+# INPUTS (vars)
+#   ccn_registry_insecure   bool    Skip all work when true (HTTP profile)
+#   ccn_registry_host       str     Registry FQDN or IP (no scheme)
+#   ccn_registry_port       int     Registry TCP port
+#   ccn_registry_ca_path    str     Filesystem path to a PEM-encoded CA
+#                                    (validated by preflight)
+#
+# OUTPUTS (set_fact)
+#   docker_ca_dir           str     The per-registry directory we wrote to,
+#                                    e.g. /etc/docker/certs.d/host:port
+#
+# SIDE EFFECTS
+#   - Creates /etc/docker/certs.d/<host>[:<port>]/ (root, 0755)
+#   - Copies CA to that directory as ca.crt (root, 0644)
+#
+# IDEMPOTENCY
+#   Re-runs are no-ops once the CA file matches: Ansible's copy module
+#   compares checksums and only writes when they differ.
+#
+# FAILURE MODES
+#   - CA path is wrong/unreadable           → caught in preflight
+#   - /etc/docker/certs.d not writable      → become: true handles this
+#   - dockerd ignores the new CA            → it shouldn't; CAs are read
+#                                              on each registry interaction,
+#                                              no restart needed (unlike
+#                                              insecure-registries)
+#
+# DESIGN NOTES
+#   The directory naming convention is fixed by Docker:
+#     /etc/docker/certs.d/<host>:<port>/ca.crt   (port included if non-443)
+#     /etc/docker/certs.d/<host>/ca.crt          (port 443 or no port)
+#
+#   We always include the port in the directory name when it's non-443
+#   so HTTPS registries on alternate ports (e.g. 8443) work. Docker
+#   reads CAs fresh on every registry interaction, so we never need to
+#   restart dockerd — that's the difference between this task and
+#   configure_insecure_registry.yaml.
+# =============================================================================
+
+- name: Skip CA trust — registry is HTTP (insecure)
+  ansible.builtin.debug:
+    msg: >-
+      ccn_registry_insecure is true; skipping CA trust setup.
+      The Docker daemon was already configured to allow HTTP for {{ ccn_registry_endpoint }}.
+  when: ccn_registry_insecure | bool
+  tags: [trust_ca]
+
+- name: Trust private CA for HTTPS registry
+  when: not (ccn_registry_insecure | bool)
+  tags: [trust_ca]
+  block:
+    - name: Compute Docker per-registry cert directory
+      ansible.builtin.set_fact:
+        docker_ca_dir: >-
+          /etc/docker/certs.d/{{ ccn_registry_host }}{% if ccn_registry_port != 443 %}:{{ ccn_registry_port }}{% endif %}
+
+    - name: Ensure Docker per-registry cert directory exists
+      ansible.builtin.file:
+        path:  "{{ docker_ca_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode:  "0755"
+      become: true
+
+    - name: Install private CA certificate for the registry
+      ansible.builtin.copy:
+        src:        "{{ ccn_registry_ca_path }}"
+        dest:       "{{ docker_ca_dir }}/ca.crt"
+        owner:      root
+        group:      root
+        mode:       "0644"
+        remote_src: true
+      become: true
+      register: ca_install
+      # remote_src: true tells Ansible the source is already on the
+      # target host (it is — preflight stat'd it there). Without this,
+      # Ansible tries to read from the control node, which is the same
+      # host here but isn't guaranteed for distributed inventories.
+
+    - name: Confirm CA is in place
+      ansible.builtin.debug:
+        msg: "Trusted {{ ccn_registry_ca_path }} for registry {{ ccn_registry_endpoint }}"
+      when: ca_install is changed

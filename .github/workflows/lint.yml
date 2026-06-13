@@ -1,0 +1,111 @@
+# =============================================================================
+# .github/workflows/lint.yml
+#
+# Runs on every push to main and every pull request. Three jobs:
+#   1. yaml-lint        — generic YAML syntax + style
+#   2. syntax-check     — ansible-playbook --syntax-check on every playbook
+#   3. release-dry-run  — verifies the release workflow would succeed
+#                          (without actually creating a release)
+# =============================================================================
+
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # YAML lint — fast, catches obvious syntax mistakes
+  # ---------------------------------------------------------------------------
+  yaml-lint:
+    name: yaml-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yamllint
+        run: pip install yamllint
+
+      - name: Lint all YAML
+        run: |
+          # Use 'relaxed' profile — strict yamllint is too pedantic for
+          # heavily-commented task files. We catch real syntax errors;
+          # we don't bikeshed line length or trailing whitespace.
+          yamllint -d relaxed pull/ push/
+
+  # ---------------------------------------------------------------------------
+  # Syntax check — Ansible's own parser validates every playbook
+  # ---------------------------------------------------------------------------
+  syntax-check:
+    name: syntax-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ansible-core
+        run: pip install 'ansible-core>=2.17'
+
+      - name: Install collections (pull side)
+        run: ansible-galaxy collection install -r pull/collections/requirements.yml
+
+      - name: Install collections (push side)
+        run: ansible-galaxy collection install -r push/collections/requirements.yml
+
+      - name: Stub vault.yaml files (required for syntax check to resolve vars)
+        run: |
+          # ansible-playbook --syntax-check loads vars_files. Without a
+          # vault.yaml present, it errors out. We stub one with the example
+          # values — they're not secrets, just placeholders.
+          cp pull/vault.yaml.example pull/vault.yaml
+          cp push/vault.yaml.example push/vault.yaml
+
+      - name: Syntax-check pull playbooks
+        working-directory: pull
+        run: |
+          ansible-playbook open-pull/playbooks/pull_artifacts.yaml --syntax-check
+          ansible-playbook open-pull/playbooks/pull_artifacts_remove.yaml --syntax-check
+
+      - name: Syntax-check push playbooks
+        working-directory: push
+        run: |
+          ansible-playbook ccn-push/playbooks/push_artifacts.yaml --syntax-check
+          ansible-playbook ccn-push/playbooks/push_artifacts_remove.yaml --syntax-check
+
+  # ---------------------------------------------------------------------------
+  # Release dry-run — verifies the release workflow's zip-build step succeeds
+  # ---------------------------------------------------------------------------
+  release-dry-run:
+    name: release-dry-run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build pull zip (dry run)
+        run: |
+          rm -rf /tmp/staging dist
+          mkdir -p /tmp/staging/f5-airgap-pull dist
+          cp -r pull/. /tmp/staging/f5-airgap-pull/
+          rm -f /tmp/staging/f5-airgap-pull/vault.yaml
+          (cd /tmp/staging && zip -rq "$GITHUB_WORKSPACE/dist/f5-airgap-pull-dryrun.zip" f5-airgap-pull)
+          ls -lh dist/
+
+      - name: Build push zip (dry run)
+        run: |
+          rm -rf /tmp/staging
+          mkdir -p /tmp/staging/f5-airgap-push
+          cp -r push/. /tmp/staging/f5-airgap-push/
+          rm -f /tmp/staging/f5-airgap-push/vault.yaml
+          (cd /tmp/staging && zip -rq "$GITHUB_WORKSPACE/dist/f5-airgap-push-dryrun.zip" f5-airgap-push)
+          ls -lh dist/
+
+      - name: Confirm zips are non-empty and contain no vault.yaml
+        run: |
+          for z in dist/*.zip; do
+            test "$(stat -c%s "$z")" -gt 1000 || { echo "$z is suspiciously small"; exit 1; }
+            unzip -l "$z" | grep -E 'vault\.yaml$' && { echo "$z contains vault.yaml — abort"; exit 1; }
+          done
+          echo "Both zips look good."

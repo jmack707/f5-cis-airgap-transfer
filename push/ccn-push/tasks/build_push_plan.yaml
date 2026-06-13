@@ -1,0 +1,118 @@
+---
+# =============================================================================
+# ccn-push/tasks/build_push_plan.yaml
+#
+# PURPOSE
+#   Joins manifest data (what's in the bundle) with the push_repo lookup
+#   tables (where each artifact should land) to produce two unified plans
+#   that downstream tasks iterate over:
+#     - push_plan        for images
+#     - chart_push_plan  for OCI charts
+#
+# INPUTS (vars)
+#   bundle_manifest          dict   Loaded by extract_bundle.yaml
+#   image_push_map           dict   image_basename → target repo path
+#   chart_push_map           dict   chart_basename → target OCI path
+#   ccn_registry_endpoint    str    Target registry host:port
+#
+# OUTPUTS (set_fact)
+#   push_plan                list of dicts:
+#     tarname     — from manifest (used only for log labels)
+#     source_ref  — what docker load produces (registry/repo:tag)
+#     target_ref  — where docker push sends it (endpoint/push_repo:tag)
+#     sha256      — pass-through from manifest, useful for logging
+#
+#   chart_push_plan          list of dicts:
+#     filename    — from manifest (used only for log labels)
+#     local_path  — full path under ccn_staging_dir/charts/
+#     target_oci  — oci:// URL helm push will use
+#     sha256      — pass-through from manifest
+#
+# JOIN KEY
+#   Images: image_push_map[(manifest_entry.repo | basename)]
+#   Charts: chart_push_map[(manifest_entry.chart | basename)]
+#
+#   Push maps are keyed by basename, NOT by full tarname/filename. This
+#   makes the map immune to version bumps — bumping cert-manager from
+#   v1.19.1 to v1.19.2 doesn't change image_push_map or chart_push_map.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Assertions first — fail fast with a clean error if any mapping is missing.
+# -----------------------------------------------------------------------------
+
+- name: Assert every manifest image has a push_repo mapping
+  ansible.builtin.assert:
+    that:
+      - (item.repo | basename) in image_push_map
+    fail_msg: >-
+      No push_repo mapping for {{ item.repo | basename }} (from {{ item.tarname }}).
+      Add an entry to group_vars/all/main.yaml under image_push_map:
+        {{ item.repo | basename }}: "<target-path-in-local-registry>"
+  loop: "{{ bundle_manifest.images }}"
+  loop_control:
+    label: "{{ item.repo | basename }} ({{ item.tarname }})"
+  tags: [plan]
+
+- name: Assert every manifest chart has a push_chart_repo mapping
+  ansible.builtin.assert:
+    that:
+      - (item.chart | basename) in chart_push_map
+    fail_msg: >-
+      No push_chart_repo mapping for {{ item.chart | basename }} (from {{ item.filename }}).
+      Add an entry to group_vars/all/main.yaml under chart_push_map:
+        {{ item.chart | basename }}: "<target-path-in-local-registry>"
+  loop: "{{ bundle_manifest.charts }}"
+  loop_control:
+    label: "{{ item.chart | basename }} ({{ item.filename }})"
+  tags: [plan]
+
+# -----------------------------------------------------------------------------
+# Build the image push plan
+# -----------------------------------------------------------------------------
+
+- name: Initialize push_plan
+  ansible.builtin.set_fact:
+    push_plan: []
+  tags: [plan]
+
+- name: Build push_plan entry for each manifest image
+  ansible.builtin.set_fact:
+    push_plan: "{{ push_plan + [entry] }}"
+  vars:
+    entry:
+      tarname:    "{{ item.tarname }}"
+      source_ref: "{{ item.registry }}/{{ item.repo }}:{{ item.tag }}"
+      target_ref: "{{ ccn_registry_endpoint }}/{{ image_push_map[item.repo | basename] }}:{{ item.tag }}"
+      sha256:     "{{ item.sha256 }}"
+  loop: "{{ bundle_manifest.images }}"
+  loop_control:
+    label: "{{ item.repo | basename }}"
+  tags: [plan]
+
+# -----------------------------------------------------------------------------
+# Build the chart push plan
+# -----------------------------------------------------------------------------
+
+- name: Build chart push plan
+  ansible.builtin.set_fact:
+    chart_push_plan: "{{ chart_push_plan | default([]) + [entry] }}"
+  vars:
+    entry:
+      filename:    "{{ item.filename }}"
+      local_path:  "{{ ccn_staging_dir }}/charts/{{ item.filename }}"
+      target_oci:  "oci://{{ ccn_registry_endpoint }}/{{ chart_push_map[item.chart | basename] }}"
+      sha256:      "{{ item.sha256 }}"
+  loop: "{{ bundle_manifest.charts }}"
+  loop_control:
+    label: "{{ item.chart | basename }}"
+  tags: [plan]
+
+- name: Display push plan summary
+  ansible.builtin.debug:
+    msg:
+      - "Push plan ready:"
+      - "  Images: {{ push_plan | length }}"
+      - "  Charts: {{ chart_push_plan | length }}"
+      - "  Target registry: {{ ccn_registry_endpoint }}"
+  tags: [plan]

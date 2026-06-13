@@ -1,0 +1,103 @@
+---
+# =============================================================================
+# ccn-push/tasks/login.yaml
+#
+# PURPOSE
+#   Authenticates to the closed-network registry for both image push
+#   (docker login) and OCI chart push (helm registry login). Both
+#   commands need the same credential; the username lives in group_vars,
+#   the token lives in vault.
+#
+# INPUTS (vars)
+#   ccn_registry_auth_required   bool   Skip all work when false
+#   ccn_registry_endpoint        str    Target registry (host:port form)
+#   ccn_registry_robot_username  str    Username for the robot account
+#   vault_ccn_registry_token     str    Token/password for the robot account
+#
+# OUTPUTS
+#   None visible to subsequent tasks. The credentials are stored by Docker
+#   in ~/.docker/config.json and by Helm in ~/.config/helm/registry/config.json.
+#   logout.yaml is responsible for clearing both at the end of the run.
+#
+# SIDE EFFECTS
+#   - Writes the robot token (base64-encoded) into ~/.docker/config.json
+#   - Writes the same token into Helm's OCI credential store
+#
+# IDEMPOTENCY
+#   docker login is idempotent — repeated calls with the same credentials
+#   overwrite the entry. Same for helm registry login.
+#
+# FAILURE MODES
+#   - 401 Unauthorized                       → token wrong/expired
+#   - 403 Forbidden                          → token valid but no push perm
+#   - Connection refused                     → registry is down
+#   - TLS handshake failure (HTTPS)          → CA trust didn't propagate
+#                                                (extremely rare; CAs are
+#                                                read on every interaction)
+#
+# DESIGN NOTES
+#   --password-stdin (not --password):
+#     `docker login -u foo -p $TOKEN` would leak the token to the process
+#     listing (`ps auxf` shows full argv). stdin keeps the credential out
+#     of /proc/<pid>/cmdline.
+#
+#   no_log: true on every task that touches the token:
+#     Ansible's default behavior is to log task input/output. Without
+#     no_log, a failing task would dump the token into the playbook log
+#     and into any CI capture.
+#
+#   Pre-flight assertion on the token:
+#     We assert the token is defined, non-empty, and not still the
+#     "REPLACE_ME" placeholder from vault.yaml.example before attempting
+#     login. This catches the common foot-gun where the operator copied
+#     the example but forgot to fill in real credentials. Without the
+#     assertion, the symptom would be a cryptic 401 from Docker.
+# =============================================================================
+
+- name: Skip login — registry is anonymous
+  ansible.builtin.debug:
+    msg: >-
+      ccn_registry_auth_required is false; skipping docker login and
+      helm registry login. Pushes will proceed unauthenticated.
+  when: not (ccn_registry_auth_required | bool)
+  tags: [login]
+
+- name: Assert vault token is present when auth is required
+  ansible.builtin.assert:
+    that:
+      - vault_ccn_registry_token is defined
+      - vault_ccn_registry_token | length > 0
+      - vault_ccn_registry_token != "REPLACE_ME"
+    fail_msg: >-
+      ccn_registry_auth_required is true but vault_ccn_registry_token is
+      missing, empty, or still set to "REPLACE_ME" in vault.yaml.
+      Either populate the token (ansible-vault edit vault.yaml) or set
+      ccn_registry_auth_required: false in group_vars/all/main.yaml.
+  when: ccn_registry_auth_required | bool
+  tags: [login]
+
+- name: Docker login to closed-network registry
+  ansible.builtin.command:
+    cmd:   "docker login {{ ccn_registry_endpoint }} --username {{ ccn_registry_robot_username }} --password-stdin"
+    stdin: "{{ vault_ccn_registry_token }}"
+  register: docker_login_result
+  changed_when: "'Login Succeeded' in docker_login_result.stdout"
+  no_log: true
+  when: ccn_registry_auth_required | bool
+  tags: [login]
+
+- name: Helm OCI registry login (for chart push)
+  ansible.builtin.command:
+    cmd:   "helm registry login {{ ccn_registry_endpoint }} --username {{ ccn_registry_robot_username }} --password-stdin"
+    stdin: "{{ vault_ccn_registry_token }}"
+  register: helm_login_result
+  changed_when: "'Login Succeeded' in helm_login_result.stdout"
+  no_log: true
+  when: ccn_registry_auth_required | bool
+  tags: [login]
+
+- name: Confirm logins succeeded
+  ansible.builtin.debug:
+    msg: "Authenticated to {{ ccn_registry_endpoint }} (docker + helm)"
+  when: ccn_registry_auth_required | bool
+  tags: [login]

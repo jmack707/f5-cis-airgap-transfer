@@ -1,0 +1,14 @@
+---
+# =============================================================================
+# inventory/hosts.yaml
+#
+# Minimal inventory for the internet-side pull stage. Everything runs on
+# localhost — closed-network stages (ccn-push, ccn-cis, ccn-app) will add
+# their own host groups here later.
+# =============================================================================
+
+all:
+  hosts:
+    localhost:
+      ansible_connection: local
+      ansible_python_interpreter: "{{ ansible_playbook_python }}"

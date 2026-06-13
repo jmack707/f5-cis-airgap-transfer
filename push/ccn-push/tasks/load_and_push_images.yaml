@@ -1,0 +1,92 @@
+---
+# =============================================================================
+# ccn-push/tasks/load_and_push_images.yaml
+#
+# PURPOSE
+#   For each image in the push plan, run the three-step sequence:
+#   load the image into the local Docker daemon, re-tag it for the
+#   local registry, and push it.
+#
+# INPUTS (vars)
+#   push_plan                list of dicts (from build_push_plan.yaml)
+#   ccn_staging_dir          str    Where the bundle was extracted
+#
+# OUTPUTS
+#   Container images now present in the closed-network registry.
+#
+# SIDE EFFECTS
+#   - docker load: adds each image to the local Docker daemon's image cache
+#   - docker tag:  creates a new tag pointing at the same image manifest
+#   - docker push: uploads the image to ccn_registry_endpoint
+#
+# IDEMPOTENCY
+#   - docker load is idempotent at the layer level; layers already in the
+#     daemon are skipped.
+#   - docker tag overwrites existing tags silently (always "changed").
+#   - docker push is idempotent at the blob level; the registry skips
+#     blobs that already exist there.
+#
+#   Net effect: re-running this task on an already-loaded host produces
+#   "Loaded image: <name>: already exists" for each image and a fast
+#   "Layer already exists" for each push. No corruption risk.
+#
+# FAILURE MODES
+#   - "no space left on device"              → Docker layer cache full
+#   - 401/403 on docker push                  → robot account RBAC wrong
+#   - "http: server gave HTTP response..."   → ccn_registry_insecure
+#                                                misconfigured (should be true)
+#   - "x509: certificate signed by unknown"   → CA not trusted; verify
+#                                                /etc/docker/certs.d/<host>/ca.crt
+#
+# DESIGN NOTES
+#   Why three separate tasks instead of one shell script?
+#     Ansible reports per-step status (you can see exactly which step
+#     fails on which image), and each task is idempotent on its own.
+#     Re-runs after a partial failure pick up cleanly.
+#
+#   Why `docker tag` is always reported as "changed":
+#     Docker tag has no "dry-run" or "is this already tagged" check.
+#     We accept the noise. The push step below it is what actually
+#     determines whether work happened.
+#
+#   changed_when on docker push:
+#     The first push from a fresh daemon emits "Pushed" lines for each
+#     layer. A subsequent push that finds all layers already in the
+#     registry emits "Layer already exists" lines, and a final "digest:"
+#     line. We check for either "Pushed" or "digest:" so the task
+#     reports "changed" on real work but "ok" on idempotent re-runs.
+# =============================================================================
+
+- name: Load images from .tar files
+  ansible.builtin.command:
+    cmd: "docker load -i {{ ccn_staging_dir }}/images/{{ item.tarname }}"
+  loop: "{{ push_plan }}"
+  loop_control:
+    label: "{{ item.tarname }}"
+  register: load_results
+  changed_when: "'Loaded image' in load_results.stdout or 'Loaded image ID' in load_results.stdout"
+  tags: [push, push_images]
+
+- name: Re-tag loaded images for the local registry
+  ansible.builtin.command:
+    cmd: "docker tag {{ item.source_ref }} {{ item.target_ref }}"
+  loop: "{{ push_plan }}"
+  loop_control:
+    label: "{{ item.source_ref }} → {{ item.target_ref }}"
+  changed_when: true   # docker tag has no idempotency signal; always report changed
+  tags: [push, push_images]
+
+- name: Push images to the local registry
+  ansible.builtin.command:
+    cmd: "docker push {{ item.target_ref }}"
+  loop: "{{ push_plan }}"
+  loop_control:
+    label: "{{ item.target_ref }}"
+  register: push_results
+  changed_when: "'Pushed' in push_results.stdout or 'digest:' in push_results.stdout"
+  tags: [push, push_images]
+
+- name: Report image push summary
+  ansible.builtin.debug:
+    msg: "Pushed {{ push_plan | length }} images to {{ ccn_registry_endpoint }}"
+  tags: [push, push_images]
