@@ -25,6 +25,12 @@
 #   the upload).
 #
 # FAILURE MODES
+#   - "downgrades scheme from https" /        → registry is plain HTTP but
+#     "server gave HTTP response to HTTPS         helm's ORAS client defaulted
+#     client"                                     to HTTPS. Fixed by the
+#                                                 --plain-http flag, which this
+#                                                 task adds automatically when
+#                                                 ccn_registry_insecure is true.
 #   - "registry has no oci capability"        → registry doesn't support
 #                                                 OCI artifacts (uncommon
 #                                                 on modern v2 images)
@@ -37,6 +43,17 @@
 #     OCI artifact push went GA in 3.8.0. 3.7.x had it as an experimental
 #     feature behind HELM_EXPERIMENTAL_OCI=1. Older versions can't push
 #     to OCI at all. The preflight task enforces this floor.
+#
+#   --plain-http on the insecure profile:
+#     Unlike `docker push`, `helm push` does NOT consult Docker's
+#     insecure-registries list. For a NON-localhost HTTP registry, helm's
+#     ORAS client defaults to HTTPS and fails with "downgrades scheme from
+#     https" (or "server gave HTTP response to HTTPS client"). We append
+#     --plain-http whenever ccn_registry_insecure is true. NOTE: that flag
+#     was added in Helm 3.13.0, so the insecure HTTP profile effectively
+#     requires Helm 3.13+, above the 3.8.0 OCI-push floor the preflight
+#     enforces. localhost/127.0.0.1 registries work without the flag, but
+#     this pipeline targets a registry by host:port, so it is required.
 #
 #   Why the target URL is "oci://<registry>/<path>" (no chart name)?
 #     Helm derives the chart name and version from the .tgz file's
@@ -56,7 +73,7 @@
 
 - name: Push Helm charts as OCI artifacts
   ansible.builtin.command:
-    cmd: "helm push {{ item.local_path }} {{ item.target_oci }}"
+    cmd: "helm push {{ item.local_path }} {{ item.target_oci }}{{ ' --plain-http' if (ccn_registry_insecure | bool) else '' }}"
   loop: "{{ chart_push_plan }}"
   loop_control:
     label: "{{ item.filename }} → {{ item.target_oci }}"

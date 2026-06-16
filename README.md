@@ -194,10 +194,21 @@ It covers the transfer.
 
 ## Requirements
 
-Both hosts:
+Both hosts (any one of the supported Linux platforms):
 
-- Ubuntu 24.04 (other Linux distros likely work; only Ubuntu 24.04 is
-  exercised in CI)
+- Ubuntu 24.04 — verified end-to-end (the original baseline)
+- Rocky Linux 9.x — supported by `setup.sh`; playbook parse is exercised
+  in CI on a `rockylinux/rockylinux:9` container. A full fresh-VM
+  end-to-end run is the pending validation step (see the test plan in
+  the project notes).
+- RHEL 9.x — same support level as Rocky 9.x; CI parse-checked on a
+  `redhat/ubi9` container, fresh-VM end-to-end run pending.
+
+`setup.sh` auto-detects the OS family from `/etc/os-release` and branches
+between the Debian/Ubuntu path (Ansible PPA + `apt-get`) and the
+Rocky/RHEL path (`ansible-core` from `dnf`/AppStream, with an EPEL
+`ansible` fallback). Other distributions may work but are not exercised.
+
 - Docker 24+ with the containerd snapshotter disabled
   (see [`push/ARCHITECTURE.md`](push/ARCHITECTURE.md) for the
   `daemon.json` configuration)

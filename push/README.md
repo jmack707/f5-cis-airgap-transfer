@@ -62,7 +62,9 @@ bash setup.sh
 This checks for ansible-core, Docker, Helm 3.8+, and the required Ansible
 collections. It does not install anything — closed-network hosts can't
 reach the internet, so installations must be done manually from local
-sources (apt mirror, offline tarballs, etc.).
+sources. The script detects the OS family from `/etc/os-release` and, when
+a check fails, prints an install hint phrased for that platform (`apt`/.deb
+on Ubuntu/Debian, `dnf`/.rpm on Rocky/RHEL).
 
 ### 2. Configure paths and registry
 
@@ -233,7 +235,7 @@ any push runs.
 
 | Requirement | Minimum | How to provide on a closed-network host |
 |-------------|---------|------------------------------------------|
-| ansible-core | 2.17 | Local apt mirror, offline pip wheel, or pre-built tarball |
+| ansible-core | 2.17 | Local apt/dnf mirror, offline pip wheel, or pre-built tarball |
 | community.docker | 3.10.0 | Offline collection tarball (`ansible-galaxy collection download`) |
 | kubernetes.core | 2.4.0 | Same as above |
 | Docker Engine | 18.09+ | Local package repository |
