@@ -139,12 +139,17 @@ jobs:
         # EL9 base images ship Python 3.9 as the system python3, but
         # ansible-core >= 2.16 requires Python >= 3.10. So we install the
         # python3.12 AppStream package and build the venv FROM it — the same
-        # path setup.sh prescribes for RHEL/Rocky operators. Adding the venv's
-        # bin to GITHUB_PATH makes every later step resolve to the venv ansible.
+        # path setup.sh prescribes for RHEL/Rocky operators.
+        #
+        # We deliberately do NOT write /opt/ansible-venv/bin to $GITHUB_PATH:
+        # in a container job that rebuilds PATH from the host and drops the
+        # image's /bin:/usr/bin, breaking the shell of every later step
+        # ("exec: sh: not found"). Each step that needs ansible prepends the
+        # venv to PATH itself, which is local to that step's already-started
+        # shell and safe.
         run: |
           dnf install -y python3.12 python3.12-pip tar gzip git >/dev/null
           python3.12 -m venv /opt/ansible-venv
-          echo "/opt/ansible-venv/bin" >> "$GITHUB_PATH"
 
       - name: Install ansible-core (>= 2.17) into the venv
         # NOTE: pip-installed on purpose. This job validates *playbook parse on
@@ -154,7 +159,7 @@ jobs:
         run: |
           /opt/ansible-venv/bin/pip install --upgrade pip
           /opt/ansible-venv/bin/pip install 'ansible-core>=2.17'
-          ansible --version | head -1   # resolves via GITHUB_PATH → the venv
+          /opt/ansible-venv/bin/ansible --version | head -1
 
       - name: Static-check setup.sh syntax on this platform
         run: |
@@ -163,6 +168,7 @@ jobs:
 
       - name: Install collections (both sides)
         run: |
+          export PATH="/opt/ansible-venv/bin:$PATH"
           ansible-galaxy collection install -r pull/collections/requirements.yml
           ansible-galaxy collection install -r push/collections/requirements.yml
 
@@ -174,12 +180,14 @@ jobs:
       - name: Syntax-check pull playbooks
         working-directory: pull
         run: |
+          export PATH="/opt/ansible-venv/bin:$PATH"
           ansible-playbook open-pull/playbooks/pull_artifacts.yaml --syntax-check
           ansible-playbook open-pull/playbooks/pull_artifacts_remove.yaml --syntax-check
 
       - name: Syntax-check push playbooks
         working-directory: push
         run: |
+          export PATH="/opt/ansible-venv/bin:$PATH"
           ansible-playbook ccn-push/playbooks/push_artifacts.yaml --syntax-check
           ansible-playbook ccn-push/playbooks/push_artifacts_remove.yaml --syntax-check
 
