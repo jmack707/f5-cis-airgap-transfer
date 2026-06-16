@@ -34,6 +34,10 @@
 #   conditional and produces "ok" on subsequent runs.
 #
 # FAILURE MODES
+#   - ansible-core below 2.17                → activate your venv first; on
+#                                              RHEL 9 / Rocky 9 the system
+#                                              python3.9 caps ansible-core at
+#                                              2.15.x (see push/README.md)
 #   - Bundle missing                         → operator must place it at the configured path
 #   - Outer checksum mismatch                → bundle corrupted in transit; re-transfer
 #   - Required CLI missing                   → install before re-running (setup.sh assists)
@@ -58,6 +62,27 @@
 #   auth is enabled but no credentials are presented; either way the API
 #   is responding, which is what we're verifying.
 # =============================================================================
+
+# -----------------------------------------------------------------------------
+# ansible-core version floor — first gate, before touching anything
+# -----------------------------------------------------------------------------
+
+- name: Assert ansible-core meets the minimum supported version
+  ansible.builtin.assert:
+    that:
+      - ansible_version.full is version('2.17.0', '>=')
+    fail_msg: >-
+      ansible-core {{ ansible_version.full }} is below the required 2.17.0.
+      On RHEL 9 / Rocky 9 the system python3 is 3.9, which caps ansible-core
+      at 2.15.x — if you see this there, you are almost certainly running the
+      system interpreter instead of your venv. Activate it and re-run:
+        source ~/.venv/ansible/bin/activate
+      (On Ubuntu, install ansible-core >= 2.17 via the Ansible PPA or pip.)
+    success_msg: "ansible-core {{ ansible_version.full }} (>= 2.17.0) — OK"
+  # ansible_version is a magic var (the controller's own version), available
+  # without gather_facts, so this fails in one second if the wrong interpreter
+  # is active — before bundle, CLI, Helm, or registry checks. The 2.17.0 floor
+  # mirrors ANSIBLE_MIN in setup.sh; keep them in sync.
 
 # -----------------------------------------------------------------------------
 # Bundle existence + outer-checksum verification

@@ -76,6 +76,122 @@ jobs:
           ansible-playbook ccn-push/playbooks/push_artifacts_remove.yaml --syntax-check
 
   # ---------------------------------------------------------------------------
+  # ShellCheck — static analysis of the setup.sh scripts. These now branch on
+  # OS family (Debian/Ubuntu vs Rocky/RHEL), so a shell linter is worth its
+  # weight: it catches quoting, unset-variable, and branch mistakes that
+  # `bash -n` does not. shellcheck is preinstalled on GitHub ubuntu runners.
+  # ---------------------------------------------------------------------------
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck setup scripts
+        run: |
+          shellcheck --version
+          # SC1091: we intentionally `. /etc/os-release` (a runtime file that
+          # is not present at lint time); the source-not-followed warning is
+          # already suppressed inline in the scripts, but we exclude it here
+          # too so a missing file at lint time is never a hard failure.
+          shellcheck -e SC1091 pull/setup.sh push/setup.sh
+
+  # ---------------------------------------------------------------------------
+  # RHEL-family parse check — proves the playbooks parse on a Rocky/RHEL
+  # filesystem, and that the OS-detection matcher in setup.sh resolves these
+  # containers to the "rhel" family. The GitHub runner OS is irrelevant; the
+  # job body runs INSIDE the container, so ansible sees a RHEL-family root.
+  #
+  # NOTE: ansible-core is installed via pip here on purpose. This job validates
+  # *playbook parse on a RHEL-family fs*, not the dnf/AppStream install path —
+  # ubi9 cannot dnf-install ansible-core without a subscription, and CI must
+  # not depend on one. The dnf path is validated by the fresh-VM test plan.
+  # ---------------------------------------------------------------------------
+  rhel-syntax-check:
+    name: rhel-syntax-check
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - rockylinux/rockylinux:9
+          - redhat/ubi9
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show detected OS and assert it classifies as rhel
+        run: |
+          # shellcheck disable=SC1091
+          . /etc/os-release
+          echo "Container OS: ${PRETTY_NAME:-unknown} (ID=${ID:-} ID_LIKE=${ID_LIKE:-})"
+          # Mirror the EXACT case expression used by detect_os in setup.sh.
+          case " ${ID:-} ${ID_LIKE:-} " in
+            *" debian "*|*" ubuntu "*) family="debian" ;;
+            *" rhel "*|*" fedora "*|*" centos "*|*" rocky "*|*" almalinux "*) family="rhel" ;;
+            *) family="unknown" ;;
+          esac
+          echo "detect_os would classify this as: ${family}"
+          test "${family}" = "rhel" || { echo "Expected rhel family, got ${family}"; exit 1; }
+
+      - name: Install Python 3.12 and build an ansible venv
+        # EL9 base images ship Python 3.9 as the system python3, but
+        # ansible-core >= 2.16 requires Python >= 3.10. So we install the
+        # python3.12 AppStream package and build the venv FROM it — the same
+        # path setup.sh prescribes for RHEL/Rocky operators.
+        #
+        # We deliberately do NOT write /opt/ansible-venv/bin to $GITHUB_PATH:
+        # in a container job that rebuilds PATH from the host and drops the
+        # image's /bin:/usr/bin, breaking the shell of every later step
+        # ("exec: sh: not found"). Each step that needs ansible prepends the
+        # venv to PATH itself, which is local to that step's already-started
+        # shell and safe.
+        run: |
+          dnf install -y python3.12 python3.12-pip tar gzip git >/dev/null
+          python3.12 -m venv /opt/ansible-venv
+
+      - name: Install ansible-core (>= 2.17) into the venv
+        # NOTE: pip-installed on purpose. This job validates *playbook parse on
+        # a RHEL-family fs*, not the dnf/AppStream install path — AppStream's
+        # ansible-core is 2.14 on Python 3.9 and cannot meet the 2.17 floor,
+        # exactly as on a real EL9 host. The venv built above sidesteps that.
+        run: |
+          /opt/ansible-venv/bin/pip install --upgrade pip
+          /opt/ansible-venv/bin/pip install 'ansible-core>=2.17'
+          /opt/ansible-venv/bin/ansible --version | head -1
+
+      - name: Static-check setup.sh syntax on this platform
+        run: |
+          bash -n pull/setup.sh
+          bash -n push/setup.sh
+
+      - name: Install collections (both sides)
+        run: |
+          export PATH="/opt/ansible-venv/bin:$PATH"
+          ansible-galaxy collection install -r pull/collections/requirements.yml
+          ansible-galaxy collection install -r push/collections/requirements.yml
+
+      - name: Stub vault.yaml files (syntax check loads vars_files)
+        run: |
+          cp pull/vault.yaml.example pull/vault.yaml
+          cp push/vault.yaml.example push/vault.yaml
+
+      - name: Syntax-check pull playbooks
+        working-directory: pull
+        run: |
+          export PATH="/opt/ansible-venv/bin:$PATH"
+          ansible-playbook open-pull/playbooks/pull_artifacts.yaml --syntax-check
+          ansible-playbook open-pull/playbooks/pull_artifacts_remove.yaml --syntax-check
+
+      - name: Syntax-check push playbooks
+        working-directory: push
+        run: |
+          export PATH="/opt/ansible-venv/bin:$PATH"
+          ansible-playbook ccn-push/playbooks/push_artifacts.yaml --syntax-check
+          ansible-playbook ccn-push/playbooks/push_artifacts_remove.yaml --syntax-check
+
+  # ---------------------------------------------------------------------------
   # Release dry-run — verifies the release workflow's zip-build step succeeds
   # ---------------------------------------------------------------------------
   release-dry-run:

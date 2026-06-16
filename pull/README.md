@@ -54,9 +54,54 @@ f5-airgap-pull/
 bash setup.sh
 ```
 
-Installs ansible-core from the official PPA, verifies Docker and Helm
-are present, installs the required Ansible collections, and confirms
-every module the playbook uses is reachable.
+Detects the OS family from `/etc/os-release` and installs ansible-core
+the right way for it — the Ansible PPA via `apt-get` on Ubuntu/Debian,
+or `ansible-core` via `dnf` (AppStream, with an EPEL `ansible` fallback)
+on Rocky 9 / RHEL 9. It then enforces the ansible-core version floor
+(>= 2.17), verifies Docker and Helm are present, installs the required
+Ansible collections, and confirms every module the playbook uses is
+reachable.
+
+Docker is treated as a prerequisite on every platform: `setup.sh` checks
+for it and points you at the correct install docs if it is missing, but
+does not install it for you.
+
+> **Rocky / RHEL note.** On Ubuntu, the Ansible PPA installs the `ansible`
+> bundle, which ships `community.docker` and `kubernetes.core` built in.
+> On Rocky/RHEL, `setup.sh` installs `ansible-core`, which bundles
+> **only** `ansible.builtin` — so the `ansible-galaxy collection install`
+> step in `setup.sh` is what provides the collections the playbook needs.
+>
+> There is a second, sharper edge on **RHEL/Rocky 9**: the platform's
+> default `python3` is 3.9, but `ansible-core` 2.17+ requires Python
+> **3.10+**. The AppStream `ansible-core` (2.14) and the EPEL `ansible`
+> bundle are both pinned to that 3.9 line and will **not** satisfy the
+> version floor — so `setup.sh` exits at the floor check, the collection
+> step is skipped, and the playbook fails with `couldn't resolve
+> module/action 'community.docker.docker_login'`. The supported fix is a
+> virtualenv built from a newer Python that EL9 packages alongside 3.9
+> (use `python3.12` to match the Ubuntu baseline's ansible-core 2.21;
+> `python3.11` also clears the floor):
+>
+> ```bash
+> sudo dnf install -y python3.12 python3.12-pip
+> rm -rf ~/.venv/ansible
+> python3.12 -m venv ~/.venv/ansible
+> . ~/.venv/ansible/bin/activate
+> pip install --upgrade pip
+> pip install 'ansible-core>=2.17' docker   # 'docker' = Docker SDK for Python
+> bash setup.sh                              # now installs the collections
+> ```
+>
+> (If `python3.12` is not available, run `dnf list available 'python3.1*'`
+> and use the highest version present.)
+>
+> The `docker` pip package is the Docker SDK that `community.docker.docker_image`
+> needs; because `inventory/hosts.yaml` pins `localhost` to
+> `ansible_playbook_python`, modules run under the venv interpreter and find
+> it there. Activate the venv (`. ~/.venv/ansible/bin/activate`) in every new
+> shell before running the playbook, or you fall back to the system
+> `ansible-core` 2.14 and hit the floor again.
 
 ### 2. Fill in secrets
 
@@ -180,7 +225,7 @@ See `open-pull/README.md` for the full image and chart version list.
 
 | Requirement | Minimum | Installed by |
 |-------------|---------|--------------|
-| ansible-core | 2.17 | `setup.sh` (Ansible PPA) |
+| ansible-core | 2.17 | `setup.sh` (Ansible PPA on Ubuntu; `dnf`/AppStream + EPEL fallback on Rocky/RHEL) |
 | community.docker | 3.10.0 | `setup.sh` (ansible-galaxy) |
 | kubernetes.core | 2.4.0 | `setup.sh` (ansible-galaxy) |
 | Helm | 3.x | `setup.sh` (helm.sh installer) |

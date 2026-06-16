@@ -88,7 +88,7 @@
 
 - name: Helm OCI registry login (for chart push)
   ansible.builtin.command:
-    cmd:   "helm registry login {{ ccn_registry_endpoint }} --username {{ ccn_registry_robot_username }} --password-stdin"
+    cmd:   "helm registry login {{ ccn_registry_endpoint }} --username {{ ccn_registry_robot_username }} --password-stdin{{ ' --plain-http' if (ccn_registry_insecure | bool) else '' }}"
     stdin: "{{ vault_ccn_registry_token }}"
   register: helm_login_result
   changed_when: "'Login Succeeded' in helm_login_result.stdout"
