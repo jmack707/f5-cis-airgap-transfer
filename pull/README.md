@@ -93,6 +93,12 @@ does not install it for you.
 > bash setup.sh                              # now installs the collections
 > ```
 >
+> Or run the helper that scripts all of the above in one command:
+> `bash bootstrap-venv.sh` (it installs python3.12, builds the venv, installs
+> ansible-core + the Docker SDK, and runs `setup.sh`). You still
+> `source ~/.venv/ansible/bin/activate` afterward — a script can't activate a
+> venv in your shell.
+>
 > (If `python3.12` is not available, run `dnf list available 'python3.1*'`
 > and use the highest version present.)
 >

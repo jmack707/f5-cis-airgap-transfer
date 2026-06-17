@@ -199,11 +199,37 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 if ! docker info >/dev/null 2>&1; then
-  echo "ERROR: Docker daemon is not running or current user cannot access it."
-  echo "       Try: sudo usermod -aG docker \$USER  (then log out and back in)"
-  exit 1
+  # Docker access is checked but NEVER mutated here — Docker is owned by your
+  # environment's prerequisites step (e.g. cni-net-lab), not by this script.
+  # The common false alarm is a STALE docker-group session: a prereqs step ran
+  # `usermod -aG docker you`, but THIS shell predates that membership, so the
+  # socket is unreadable until you start a fresh login shell. That is transient
+  # and self-healing — not a reason to abort. ansible-core and the collection
+  # install below need no Docker socket, so we WARN and continue rather than
+  # exit, and tell you exactly how to fix access before the playbook runs.
+  me="$(id -un)"
+  if sudo -n docker info >/dev/null 2>&1; then
+    # Daemon is UP; only your user's socket access is the problem.
+    if getent group docker 2>/dev/null | awk -F: '{print $4}' | tr ',' '\n' | grep -qx "$me"; then
+      echo "    WARNING: the Docker daemon is up, but THIS shell predates your"
+      echo "             'docker' group membership. Session issue, not a Docker"
+      echo "             problem — no reinstall needed. Before the pull playbook:"
+      echo "                 newgrp docker      # or start a fresh login shell"
+    else
+      echo "    WARNING: the Docker daemon is up, but ${me} is not in the 'docker'"
+      echo "             group. Add yourself, then start a fresh shell, before the"
+      echo "             pull playbook:"
+      echo "                 sudo usermod -aG docker ${me} && newgrp docker"
+    fi
+  else
+    echo "    WARNING: could not confirm the Docker daemon is reachable. Ensure it"
+    echo "             is installed (by your prereqs step) and running before the"
+    echo "             pull playbook:  sudo systemctl enable --now docker"
+  fi
+  echo "    (Continuing — ansible/collection setup does not need the Docker socket.)"
+else
+  echo "    Docker daemon reachable as $(id -un)."
 fi
-echo "    Docker daemon reachable."
 
 echo
 echo "==> Checking for Helm..."

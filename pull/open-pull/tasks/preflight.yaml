@@ -28,6 +28,10 @@
 #                                            RHEL 9 / Rocky 9 the system
 #                                            python3.9 caps ansible-core at
 #                                            2.15.x (see pull/README.md)
+#   - Required collection missing        → run ansible-galaxy collection
+#                                            install -r collections/requirements.yml
+#                                            (or bash setup.sh) against the
+#                                            active interpreter/venv
 #   - Required CLI missing               → install before re-running
 #                                            (setup.sh covers this)
 #   - Insufficient disk space            → free space or lower threshold
@@ -55,6 +59,59 @@
   # own version), available without gather_facts, so this fails in one second
   # if the wrong interpreter is active — before any login, pull, or mkdir.
   # The 2.17.0 floor mirrors ANSIBLE_MIN in setup.sh; keep them in sync.
+
+- name: Read installed Ansible collections
+  ansible.builtin.command: ansible-galaxy collection list --format json
+  args:
+    # Run from the project root (where ansible.cfg lives) so ansible-galaxy
+    # honors the project's collections_path (./collections:…) and sees the
+    # SAME collections the playbook loads. Without this, the command module's
+    # default working dir does not read the project ansible.cfg, so a
+    # project-local install reports as "missing" — a false negative.
+    chdir: "{{ playbook_dir }}/../.."
+  register: preflight_collection_list
+  changed_when: false
+  check_mode: false
+  tags: [preflight]
+
+- name: Assert required collections are installed and current
+  vars:
+    # ansible-galaxy emits {path: {name: {version: x}}}; flatten across paths.
+    _collections: "{{ preflight_collection_list.stdout | from_json }}"
+    _docker_versions: >-
+      {{ _collections.values() | map('dict2items') | flatten
+         | selectattr('key', 'equalto', 'community.docker')
+         | map(attribute='value.version') | list }}
+    _k8s_versions: >-
+      {{ _collections.values() | map('dict2items') | flatten
+         | selectattr('key', 'equalto', 'kubernetes.core')
+         | map(attribute='value.version') | list }}
+    # Sentinel so an ABSENT collection yields a version that fails the floor
+    # cleanly, instead of `| first` throwing on an empty list (which would
+    # crash msg templating before our fail_msg could render).
+    _docker_ver: "{{ (_docker_versions + ['0.0.0']) | first }}"
+    _k8s_ver: "{{ (_k8s_versions + ['0.0.0']) | first }}"
+  ansible.builtin.assert:
+    that:
+      - _docker_versions | length > 0
+      - _docker_ver is version('3.10.0', '>=')
+      - _k8s_versions | length > 0
+      - _k8s_ver is version('2.4.0', '>=')
+    fail_msg: >-
+      Required collections are missing or too old (need community.docker
+      >=3.10.0 and kubernetes.core >=2.4.0; found community.docker
+      {{ _docker_ver }}, kubernetes.core {{ _k8s_ver }}). On EL9 this usually
+      means the venv was built but setup.sh's collection-install step has not
+      run against THIS interpreter yet. Fix it — venv active, from the project
+      root: ansible-galaxy collection install -r collections/requirements.yml
+      (or just: bash setup.sh).
+    success_msg: >-
+      Collections OK — community.docker {{ _docker_ver }},
+      kubernetes.core {{ _k8s_ver }}
+  tags: [preflight]
+  # SECOND gate. Catches the "good ansible, no collections" state that
+  # otherwise fails deep in pull_dockerhub.yaml with the cryptic
+  # "couldn't resolve module/action 'community.docker.docker_login'".
 
 - name: Verify required CLI tools are installed
   ansible.builtin.command:

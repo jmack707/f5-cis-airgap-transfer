@@ -84,6 +84,47 @@
   # is active — before bundle, CLI, Helm, or registry checks. The 2.17.0 floor
   # mirrors ANSIBLE_MIN in setup.sh; keep them in sync.
 
+- name: Read installed Ansible collections
+  ansible.builtin.command: ansible-galaxy collection list --format json
+  args:
+    # Run from the project root (where ansible.cfg lives) so ansible-galaxy
+    # honors the project's collections_path and sees the SAME collections the
+    # playbook loads. Without this, a project-local install reports as
+    # "missing" — a false negative.
+    chdir: "{{ playbook_dir }}/../.."
+  register: preflight_collection_list
+  changed_when: false
+  check_mode: false
+
+- name: Assert community.docker is installed and current
+  vars:
+    # ansible-galaxy emits {path: {name: {version: x}}}; flatten across paths.
+    # The push side uses community.docker (login/load/tag/push); it drives Helm
+    # via the helm CLI, so kubernetes.core is not required here.
+    _collections: "{{ preflight_collection_list.stdout | from_json }}"
+    _docker_versions: >-
+      {{ _collections.values() | map('dict2items') | flatten
+         | selectattr('key', 'equalto', 'community.docker')
+         | map(attribute='value.version') | list }}
+    # Sentinel so an ABSENT collection fails the floor cleanly instead of
+    # `| first` throwing on an empty list (which would crash msg templating).
+    _docker_ver: "{{ (_docker_versions + ['0.0.0']) | first }}"
+  ansible.builtin.assert:
+    that:
+      - _docker_versions | length > 0
+      - _docker_ver is version('3.10.0', '>=')
+    fail_msg: >-
+      community.docker is missing or too old (need >=3.10.0; found
+      {{ _docker_ver }}). On EL9 this usually means the venv was built but the
+      collection-install step has not run against THIS interpreter yet. Install
+      it from local sources (offline tarball / local Galaxy mirror), e.g.
+      ansible-galaxy collection install -r collections/requirements.yml,
+      then re-run.
+    success_msg: "community.docker OK — {{ _docker_ver }}"
+  # SECOND gate. Catches the "good ansible, no collections" state that
+  # otherwise fails deep in load_and_push_images / login with the cryptic
+  # "couldn't resolve module/action 'community.docker.docker_login'".
+
 # -----------------------------------------------------------------------------
 # Bundle existence + outer-checksum verification
 # -----------------------------------------------------------------------------
