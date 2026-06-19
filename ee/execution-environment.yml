@@ -1,0 +1,80 @@
+---
+# =============================================================================
+# ee/execution-environment.yml
+#
+# ansible-builder v3 definition for the f5-airgap Execution Environment (EE).
+#
+# WHAT THIS IS
+#   A single container image that carries everything BOTH stages of the
+#   pipeline need to run:
+#     - ansible-core (>= 2.17) on a modern Python (3.12)
+#     - the collections the playbooks call (community.docker, kubernetes.core,
+#       ansible.utils)
+#     - the Docker SDK for Python (community.docker's module dependency)
+#     - the `docker` CLI (client only) and `helm` CLI (>= 3.13 for OCI
+#       --plain-http / --ca-file support)
+#     - tar / gzip / openssl / sha256sum (coreutils) for bundling and
+#       integrity checks
+#
+#   The EE replaces the old per-host venv + setup.sh + ansible-galaxy flow.
+#   Build it ONCE (see ee/README.md), then run the playbooks through it with
+#   ansible-navigator (see pull/ansible-navigator.yml, push/ansible-navigator.yml).
+#
+# WHY A RHEL-FAMILY BASE
+#   The project targets Ubuntu and RHEL/Rocky 9 hosts. The EE's own base OS is
+#   independent of the host OS — it runs in a container — but we pick Rocky 9
+#   to match the enterprise environments this tooling lands in. EL9 ships
+#   Python 3.9 as the system python3, below ansible-core's 3.10+ floor, so we
+#   pull in python3.12 and point the build at it via dependencies.python_interpreter.
+#
+# THE DOCKER CLIENT, NOT A DOCKER DAEMON
+#   The EE contains only the docker *client*. At run time the host's Docker
+#   socket is bind-mounted in (see the ansible-navigator configs), so every
+#   `docker` invocation and every community.docker module talks to the HOST
+#   daemon. The EE never runs its own dockerd (no docker-in-docker).
+# =============================================================================
+
+version: 3
+
+images:
+  base_image:
+    name: quay.io/rockylinux/rockylinux:9
+
+dependencies:
+  # Use Python 3.12 for ansible-core and all module execution. package_system
+  # ensures the interpreter is installed during the build; python_path makes
+  # ansible-builder install ansible-core / runner / collections against it.
+  python_interpreter:
+    package_system: python3.12
+    python_path: /usr/bin/python3.12
+
+  ansible_core:
+    package_pip: ansible-core>=2.17
+
+  ansible_runner:
+    package_pip: ansible-runner
+
+  galaxy: requirements.yml
+  python: requirements.txt
+  system: bindep.txt
+
+additional_build_steps:
+  append_final:
+    # --- docker CLI (client only) -------------------------------------------
+    - RUN dnf install -y dnf-plugins-core
+    - RUN dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+    - RUN dnf install -y docker-ce-cli && dnf clean all
+
+    # --- helm CLI -----------------------------------------------------------
+    # 3.13+ is required for `helm push --plain-http` (HTTP registries) and
+    # `helm push --ca-file` (private-CA HTTPS registries) used by the push
+    # stage. Bump HELM_VERSION here to take a newer helm.
+    - >-
+      RUN HELM_VERSION=v3.16.3 &&
+      curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" -o /tmp/helm.tgz &&
+      tar -xzf /tmp/helm.tgz -C /tmp &&
+      install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm &&
+      rm -rf /tmp/helm.tgz /tmp/linux-amd64
+
+    # --- prove the CLIs are present and runnable in the final image ---------
+    - RUN docker --version && helm version --short

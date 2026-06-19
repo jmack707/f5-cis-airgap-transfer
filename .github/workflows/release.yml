@@ -38,6 +38,9 @@ jobs:
           mkdir -p /tmp/staging/f5-airgap-pull dist
           cp -r pull/. /tmp/staging/f5-airgap-pull/
 
+          # Bundle the EE definition so a one-zip download can build the EE.
+          cp -r ee /tmp/staging/f5-airgap-pull/ee
+
           # Defensive: strip any vault.yaml that might have leaked in.
           # The .gitignore should prevent this but defense-in-depth.
           rm -f /tmp/staging/f5-airgap-pull/vault.yaml
@@ -54,6 +57,7 @@ jobs:
           rm -rf /tmp/staging
           mkdir -p /tmp/staging/f5-airgap-push
           cp -r push/. /tmp/staging/f5-airgap-push/
+          cp -r ee /tmp/staging/f5-airgap-push/ee
           rm -f /tmp/staging/f5-airgap-push/vault.yaml
           rm -f /tmp/staging/f5-airgap-push/vault.yml
 

@@ -1,0 +1,18 @@
+# =============================================================================
+# ee/bindep.txt — system (OS) packages baked into the EE
+#
+# ansible-builder feeds this to bindep and installs the matching packages with
+# the base image's package manager (dnf, on the Rocky 9 base). The
+# "[platform:rpm]" profile scopes each line to RPM-based distributions.
+# =============================================================================
+
+git [platform:rpm]
+tar [platform:rpm]
+gzip [platform:rpm]
+openssl [platform:rpm]
+
+# pip + headers/compiler for the EE's Python 3.12, so any Python dependency
+# that needs a wheel build during the image build succeeds.
+python3.12-pip [platform:rpm]
+python3.12-devel [platform:rpm]
+gcc [platform:rpm]

@@ -1,0 +1,25 @@
+---
+# =============================================================================
+# ee/requirements.yml — Galaxy collections baked into the EE
+#
+# This is now the SINGLE source of truth for the collection set (the old
+# per-side pull/collections/requirements.yml and push/collections/requirements.yml
+# are gone — both stages run inside the same EE).
+#
+# ansible-builder installs these into the image at build time, under
+# /usr/share/ansible/collections, which is on the default collection search
+# path inside the EE. Nothing is installed on the host.
+#
+# Versions are pinned to floor values known to work; higher SemVer-compatible
+# versions are accepted.
+# =============================================================================
+
+collections:
+  - name: community.docker
+    version: ">=3.10.0"     # docker_login, docker_image (pull/save), etc.
+
+  - name: kubernetes.core
+    version: ">=2.4.0"      # helm_repository module (pull stage)
+
+  - name: ansible.utils
+    version: ">=2.10.0"     # shared network/data helpers

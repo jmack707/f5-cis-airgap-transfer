@@ -26,9 +26,8 @@ f5-airgap-pull/
 ├── README.md                        ← you are here
 ├── .gitignore
 ├── ansible.cfg
-├── setup.sh                         ← installs ansible-core + collections + helm
+├── ansible-navigator.yml            ← runs this stage inside the EE
 ├── vault.yaml.example
-├── collections/requirements.yml
 ├── inventory/hosts.yaml
 ├── group_vars/
 │   └── all/main.yaml                ← image list + paths + tuning knobs
@@ -46,68 +45,34 @@ f5-airgap-pull/
         └── bundle.yaml
 ```
 
+The Ansible toolchain (ansible-core, collections, Docker SDK, `helm`) lives in
+the **Execution Environment** defined at the repo root in
+[`../ee/`](../ee/README.md), not in this directory.
+
 ## Quick Start
 
-### 1. One-shot setup
+### 1. Build the EE and install the runner (one-time)
+
+The toolchain ships as an Execution Environment image. Build it once on an
+internet-connected host, then install the runner:
 
 ```bash
-bash setup.sh
+pip install ansible-builder ansible-navigator
+bash ../ee/build-ee.sh        # builds f5-airgap-ee:latest
 ```
 
-Detects the OS family from `/etc/os-release` and installs ansible-core
-the right way for it — the Ansible PPA via `apt-get` on Ubuntu/Debian,
-or `ansible-core` via `dnf` (AppStream, with an EPEL `ansible` fallback)
-on Rocky 9 / RHEL 9. It then enforces the ansible-core version floor
-(>= 2.17), verifies Docker and Helm are present, installs the required
-Ansible collections, and confirms every module the playbook uses is
-reachable.
+The host itself only needs a container runtime (Docker or Podman) and a
+running Docker daemon — the EE drives that daemon over the mounted socket to
+pull and save images. There is nothing else to install: ansible-core, the
+collections, the Docker SDK, and `helm` all live inside the EE. See
+[`../ee/README.md`](../ee/README.md) for build details and version bumps.
 
-Docker is treated as a prerequisite on every platform: `setup.sh` checks
-for it and points you at the correct install docs if it is missing, but
-does not install it for you.
-
-> **Rocky / RHEL note.** On Ubuntu, the Ansible PPA installs the `ansible`
-> bundle, which ships `community.docker` and `kubernetes.core` built in.
-> On Rocky/RHEL, `setup.sh` installs `ansible-core`, which bundles
-> **only** `ansible.builtin` — so the `ansible-galaxy collection install`
-> step in `setup.sh` is what provides the collections the playbook needs.
->
-> There is a second, sharper edge on **RHEL/Rocky 9**: the platform's
-> default `python3` is 3.9, but `ansible-core` 2.17+ requires Python
-> **3.10+**. The AppStream `ansible-core` (2.14) and the EPEL `ansible`
-> bundle are both pinned to that 3.9 line and will **not** satisfy the
-> version floor — so `setup.sh` exits at the floor check, the collection
-> step is skipped, and the playbook fails with `couldn't resolve
-> module/action 'community.docker.docker_login'`. The supported fix is a
-> virtualenv built from a newer Python that EL9 packages alongside 3.9
-> (use `python3.12` to match the Ubuntu baseline's ansible-core 2.21;
-> `python3.11` also clears the floor):
->
-> ```bash
-> sudo dnf install -y python3.12 python3.12-pip
-> rm -rf ~/.venv/ansible
-> python3.12 -m venv ~/.venv/ansible
-> . ~/.venv/ansible/bin/activate
-> pip install --upgrade pip
-> pip install 'ansible-core>=2.17' docker   # 'docker' = Docker SDK for Python
-> bash setup.sh                              # now installs the collections
-> ```
->
-> Or run the helper that scripts all of the above in one command:
-> `bash bootstrap-venv.sh` (it installs python3.12, builds the venv, installs
-> ansible-core + the Docker SDK, and runs `setup.sh`). You still
-> `source ~/.venv/ansible/bin/activate` afterward — a script can't activate a
-> venv in your shell.
->
-> (If `python3.12` is not available, run `dnf list available 'python3.1*'`
-> and use the highest version present.)
->
-> The `docker` pip package is the Docker SDK that `community.docker.docker_image`
-> needs; because `inventory/hosts.yaml` pins `localhost` to
-> `ansible_playbook_python`, modules run under the venv interpreter and find
-> it there. Activate the venv (`. ~/.venv/ansible/bin/activate`) in every new
-> shell before running the playbook, or you fall back to the system
-> `ansible-core` 2.14 and hit the floor again.
+> **Docker socket access.** The EE runs as root and the host socket is
+> bind-mounted in (`/var/run/docker.sock`), so the pulls reach the host
+> daemon. With **rootless Podman**, root-in-container maps to your host UID,
+> which must be able to read the socket — add yourself to the `docker` group
+> on the host (or run the EE with Docker, the default). The navigator config
+> already requests `--user=root`.
 
 ### 2. Fill in secrets
 
@@ -115,6 +80,9 @@ does not install it for you.
 cp vault.yaml.example vault.yaml
 # edit vault.yaml — replace REPLACE_ME with your credentials
 ansible-vault encrypt vault.yaml
+
+# Vault password file, read by ansible-navigator (gitignored):
+printf '%s' 'your-vault-password' > .vault-pass && chmod 600 .vault-pass
 ```
 
 You'll need:
@@ -135,8 +103,15 @@ The directory gets created automatically if it doesn't exist.
 ### 4. Run
 
 ```bash
-ansible-playbook open-pull/playbooks/pull_artifacts.yaml --ask-vault-pass
+ansible-navigator run open-pull/playbooks/pull_artifacts.yaml \
+  --vault-password-file .vault-pass
 ```
+
+`ansible-navigator.yml` in this directory tells navigator to run the playbook
+inside `f5-airgap-ee:latest` with the host Docker socket mounted. Output
+streams to your terminal (`mode: stdout`). If you prefer an interactive vault
+prompt, drop the flag and add `--playbook-artifact-enable false` — but a
+password file is the smoother path.
 
 ### 5. Transfer
 
@@ -210,12 +185,14 @@ Any variable can be overridden at run time with `--extra-vars`:
 
 ```bash
 # Pull to a USB stick mounted at /media/usb instead of the default location:
-ansible-playbook open-pull/playbooks/pull_artifacts.yaml \
-  --ask-vault-pass \
+ansible-navigator run open-pull/playbooks/pull_artifacts.yaml \
+  --vault-password-file .vault-pass \
   --extra-vars "artifact_staging_dir=/media/usb/airgap"
 ```
 
-Useful for testing a different output location without editing files.
+Useful for testing a different output location without editing files. Note
+that a staging directory **outside the project** must also be added as a
+`volume-mount` in `ansible-navigator.yml` so the EE can write to it.
 
 ## What Gets Bundled
 
@@ -229,13 +206,16 @@ See `open-pull/README.md` for the full image and chart version list.
 
 ## Prerequisites
 
-| Requirement | Minimum | Installed by |
-|-------------|---------|--------------|
-| ansible-core | 2.17 | `setup.sh` (Ansible PPA on Ubuntu; `dnf`/AppStream + EPEL fallback on Rocky/RHEL) |
-| community.docker | 3.10.0 | `setup.sh` (ansible-galaxy) |
-| kubernetes.core | 2.4.0 | `setup.sh` (ansible-galaxy) |
-| Helm | 3.x | `setup.sh` (helm.sh installer) |
-| Docker Engine | 18.09+ | must already be installed |
+| Requirement | Minimum | Provided by |
+|-------------|---------|-------------|
+| ansible-core | 2.17 | the EE (`ee/execution-environment.yml`) |
+| community.docker | 3.10.0 | the EE (`ee/requirements.yml`) |
+| kubernetes.core | 2.4.0 | the EE (`ee/requirements.yml`) |
+| Helm | 3.13+ | the EE |
+| Docker SDK for Python | 7.0+ | the EE (`ee/requirements.txt`) |
+| `ansible-navigator` | current | `pip install ansible-navigator` (host) |
+| Container runtime | Docker 24+ / Podman | host (runs the EE) |
+| Docker Engine | 24+ | host (the EE drives it via the mounted socket) |
 
 ---
 
@@ -245,18 +225,18 @@ The playbook is tagged so you can run subsets without running everything:
 
 ```bash
 # Just preflight — fast environment validation after editing group_vars
-ansible-playbook open-pull/playbooks/pull_artifacts.yaml --ask-vault-pass --tags preflight
+ansible-navigator run open-pull/playbooks/pull_artifacts.yaml --vault-password-file .vault-pass --tags preflight
 
 # Just one registry's images
-ansible-playbook open-pull/playbooks/pull_artifacts.yaml --ask-vault-pass --tags pull_dockerhub
-ansible-playbook open-pull/playbooks/pull_artifacts.yaml --ask-vault-pass --tags pull_quay
-ansible-playbook open-pull/playbooks/pull_artifacts.yaml --ask-vault-pass --tags pull_nginx
+ansible-navigator run open-pull/playbooks/pull_artifacts.yaml --vault-password-file .vault-pass --tags pull_dockerhub
+ansible-navigator run open-pull/playbooks/pull_artifacts.yaml --vault-password-file .vault-pass --tags pull_quay
+ansible-navigator run open-pull/playbooks/pull_artifacts.yaml --vault-password-file .vault-pass --tags pull_nginx
 
 # All registry pulls but skip the bundling step
-ansible-playbook open-pull/playbooks/pull_artifacts.yaml --ask-vault-pass --tags pull
+ansible-navigator run open-pull/playbooks/pull_artifacts.yaml --vault-password-file .vault-pass --tags pull
 
 # Re-bundle existing staged files (skip the pulls)
-ansible-playbook open-pull/playbooks/pull_artifacts.yaml --ask-vault-pass --tags bundle
+ansible-navigator run open-pull/playbooks/pull_artifacts.yaml --vault-password-file .vault-pass --tags bundle
 ```
 
 ---

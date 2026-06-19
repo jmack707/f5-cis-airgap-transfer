@@ -2,18 +2,22 @@
 
 ## What This Stage Does
 
-Runs on a closed-network host that has been physically handed the
-`airgap-bundle.tar.gz` produced by the `open-pull` stage. It:
+Runs **inside the f5-airgap Execution Environment** on a closed-network host
+that has been physically handed the `airgap-bundle.tar.gz` produced by the
+`open-pull` stage (plus the EE image). It:
 
 1. Verifies the bundle and the host's tooling
-2. Configures Docker for the target registry — either trusts a private CA
-   (HTTPS) or adds the registry to the daemon's insecure-registries list (HTTP)
-3. Extracts the bundle into a staging area
-4. Recomputes SHA-256 for every image and chart and asserts the values match
+2. Extracts the bundle into a staging area
+3. Recomputes SHA-256 for every image and chart and asserts the values match
    the manifest the open-pull stage signed off on
-5. Authenticates (if required) and pushes every image and OCI chart into
+4. Authenticates (if required) and pushes every image and OCI chart into
    the local registry
-6. Logs out cleanly (even if a step fails partway through)
+5. Logs out cleanly (even if a step fails partway through)
+
+The Docker daemon's registry configuration (trust a private CA for HTTPS, or
+add the registry to `insecure-registries` for HTTP) is a HOST-level change that
+can't run in a container, so it's done once beforehand by `host-prep.sh` (see
+step 2 below).
 
 After ccn-push completes, the closed-network Kubernetes cluster can pull
 everything from the local registry without any internet access.
@@ -26,10 +30,11 @@ everything from the local registry without any internet access.
 
 | Tool | Minimum | Notes |
 |------|---------|-------|
-| Docker Engine | 18.09+ | Must be running and accessible to the current user |
-| Helm | **3.8.0+** | Required for OCI registry push (`helm push oci://…`) |
-| ansible-core | 2.17+ | Same as open-pull |
-| Private CA certificate | PEM-encoded | HTTPS only — must be readable at `ccn_registry_ca_path` |
+| The EE image | `f5-airgap-ee:latest` | `docker load` from the saved image carried across the gap |
+| `ansible-navigator` | current | Runs the playbook inside the EE |
+| Docker Engine | 24+ | Running and accessible; the EE drives it via the mounted socket |
+| Helm, ansible-core, collections, Docker SDK | — | **baked into the EE** — not installed on the host |
+| Private CA certificate | PEM-encoded | HTTPS only — readable at `ccn_registry_ca_path` AND mounted into the EE |
 
 ### 1. Place the bundle
 
@@ -99,21 +104,35 @@ Each image and chart in `group_vars/all/main.yaml` carries a `push_repo` or
 | `private-registry.nginx.com/nginx-ic/nginx-plus-ingress:5.3.2` | `<registry>/nginx/nginx-plus-ingress:5.3.2` |
 | `f5-bigip-ctlr-0.0.35.tgz` (OCI) | `<registry>/f5/charts/f5-bigip-ctlr:0.0.35` |
 
-### 5. Run
+### 5. Prepare the host Docker daemon (once, outside the EE)
 
 ```bash
-# If auth is required:
-ansible-playbook ccn-push/playbooks/push_artifacts.yaml --ask-vault-pass
+# HTTP (insecure) registry:
+sudo ./host-prep.sh --host registry.example.com --port 5000 --insecure
 
-# If anonymous:
-ansible-playbook ccn-push/playbooks/push_artifacts.yaml
+# OR HTTPS with a private CA:
+sudo ./host-prep.sh --host registry.internal.example.com --port 443 \
+  --ca-path /etc/ssl/certs/internal-ca.crt
 ```
 
-On first run with an insecure (HTTP) registry, the playbook restarts the
-Docker daemon to pick up the `insecure-registries` change. Brief downtime
-for any running containers — minimal in practice.
+On first run with an insecure (HTTP) registry, `host-prep.sh` restarts the
+Docker daemon to pick up the `insecure-registries` change. Brief downtime for
+any running containers — minimal in practice. For HTTPS, also uncomment the CA
+`volume-mount` in `ansible-navigator.yml` so `helm` in the EE can verify TLS.
 
-### 6. Verify (manual spot-check)
+### 6. Run
+
+```bash
+# If auth is required (vault password file in .vault-pass):
+ansible-navigator run ccn-push/playbooks/push_artifacts.yaml \
+  --vault-password-file .vault-pass
+
+# If anonymous (vault still resolves topology vars, so the file is still used):
+ansible-navigator run ccn-push/playbooks/push_artifacts.yaml \
+  --vault-password-file .vault-pass
+```
+
+### 7. Verify (manual spot-check)
 
 ```bash
 # HTTP, anonymous:
@@ -124,15 +143,19 @@ curl http://registry.example.com:5000/v2/f5/k8s-bigip-ctlr/tags/list
 helm show chart oci://registry.example.com:5000/f5/charts/f5-bigip-ctlr --version 0.0.35
 ```
 
-### 7. Clean up (optional)
+### 8. Clean up (optional)
 
 ```bash
-# Interactive — removes only the staging area:
-ansible-playbook ccn-push/playbooks/push_artifacts_remove.yaml
+# Interactive — removes only the staging area (inside the EE):
+ansible-navigator run ccn-push/playbooks/push_artifacts_remove.yaml \
+  --vault-password-file .vault-pass
 
 # CI / non-interactive:
-ansible-playbook ccn-push/playbooks/push_artifacts_remove.yaml \
-  --extra-vars "confirm_removal=true"
+ansible-navigator run ccn-push/playbooks/push_artifacts_remove.yaml \
+  --vault-password-file .vault-pass --extra-vars "confirm_removal=true"
+
+# Undo the host Docker-daemon change (on the host, outside the EE):
+sudo ./host-prep.sh --host registry.example.com --port 5000 --insecure --remove
 ```
 
 ---
@@ -141,9 +164,8 @@ ansible-playbook ccn-push/playbooks/push_artifacts_remove.yaml \
 
 | File | Responsibility |
 |------|---------------|
+| `../host-prep.sh` (host, not EE) | Configure the host Docker daemon: insecure-registries + restart (HTTP), or install private CA to `/etc/docker/certs.d/<host>/ca.crt` (HTTPS) |
 | `tasks/preflight.yaml` | Bundle, tools, Helm 3.8+, CA file (HTTPS), disk, network reachability |
-| `tasks/configure_insecure_registry.yaml` | Add registry to `/etc/docker/daemon.json` insecure-registries (HTTP only) |
-| `tasks/trust_ca.yaml` | Install private CA into `/etc/docker/certs.d/<host>/ca.crt` (HTTPS only) |
 | `tasks/extract_bundle.yaml` | `tar -xzf` into staging, load `manifest.json` |
 | `tasks/verify_manifest.yaml` | Per-file SHA-256 check against the manifest |
 | `tasks/build_push_plan.yaml` | Join manifest with `push_repo` mappings → unified push plan |
@@ -160,19 +182,20 @@ Docker refuses HTTP registries by default — every push first tries HTTPS
 and fails with `http: server gave HTTP response to HTTPS client`.
 
 To allow HTTP push to a specific registry, the endpoint has to be listed
-under `insecure-registries` in `/etc/docker/daemon.json`. The
-`configure_insecure_registry.yaml` task:
+under `insecure-registries` in `/etc/docker/daemon.json`. Since the EE runs in
+a container and can't restart the host daemon, this is done on the host by
+`host-prep.sh --insecure`, which:
 
 1. Reads existing `/etc/docker/daemon.json` (or starts with `{}`)
-2. Merges `insecure-registries: ["<host>:<port>"]` into the JSON
-3. Writes the merged result back with a backup of the original
+2. Merges `insecure-registries: ["<host>:<port>"]` into the JSON (preserving
+   any existing options, de-duplicating the endpoint)
+3. Writes the merged result back with a timestamped backup of the original
 4. Restarts `dockerd` only if the file changed
 5. Waits for the daemon to come back up
-6. Confirms the registry is in the daemon's reported `IndexConfigs`
+6. Confirms the registry shows up in `docker info`
 
-This is idempotent — re-running the playbook with the same configuration
-doesn't restart Docker again. Changing the registry host or port does
-trigger a restart.
+This is idempotent — re-running with the same arguments doesn't restart Docker
+again. `host-prep.sh --insecure --remove` reverses it.
 
 ---
 
@@ -186,7 +209,8 @@ trigger a restart.
 | Registry unreachable on TCP | Preflight | Check firewall, registry container status |
 | Registry HTTP API returns 5xx | Preflight (insecure only) | Check `docker logs <registry>` on the registry host |
 | `http: server gave HTTP response to HTTPS client` | Image push | `ccn_registry_insecure` should be `true` |
-| `x509: certificate signed by unknown authority` | Image push | `ccn_registry_ca_path` is wrong or CA file isn't PEM |
+| `x509: certificate signed by unknown authority` | Image push | Run `host-prep.sh --ca-path ...`; CA not trusted by the host daemon |
+| `x509: certificate signed by unknown authority` | Chart push (helm) | CA not mounted into the EE / `--ca-file` path wrong (see `ansible-navigator.yml`) |
 | Inner file SHA-256 mismatch | Verify manifest | Re-run open-pull and re-transfer the bundle |
 | `docker login` fails | Login | Token expired/wrong or registry RBAC blocks the account |
 | `docker push` 401/403 mid-push | Image push | Robot account lacks push permission on that path |

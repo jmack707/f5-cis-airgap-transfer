@@ -1,0 +1,57 @@
+---
+# =============================================================================
+# pull/ansible-navigator.yml — how the pull stage runs inside the EE
+#
+# ansible-navigator auto-loads this file when invoked from the pull/ directory.
+# It tells navigator to run every playbook inside the f5-airgap Execution
+# Environment instead of against a host venv.
+#
+# RUN
+#   cd pull
+#   ansible-navigator run open-pull/playbooks/pull_artifacts.yaml \
+#     --vault-password-file .vault-pass
+#
+#   (or export ANSIBLE_VAULT_PASSWORD_FILE — passed through below — and drop
+#    the flag. See pull/README.md.)
+#
+# MOUNTS
+#   - The host Docker socket, so the docker CLI and community.docker modules
+#     inside the EE drive the HOST daemon (pulls, saves) — no docker-in-docker.
+#   - navigator bind-mounts the current working directory (pull/) into the EE
+#     at the same path automatically, so artifacts/ is written back to the
+#     host. If you point artifact_staging_dir OUTSIDE the project (e.g.
+#     /mnt/transfer), add that path under volume-mounts below.
+# =============================================================================
+
+ansible-navigator:
+  mode: stdout
+
+  execution-environment:
+    enabled: true
+    image: f5-airgap-ee:latest
+    container-engine: docker
+    pull:
+      policy: missing
+    # Run as root inside the EE so the bind-mounted root:docker socket is
+    # readable. (Rootless podman users: see pull/README.md for the uid note.)
+    container-options:
+      - "--user=root"
+    environment-variables:
+      pass:
+        # Let `ansible-navigator run --vault-password-file <path>` or an
+        # exported ANSIBLE_VAULT_PASSWORD_FILE reach ansible inside the EE.
+        - ANSIBLE_VAULT_PASSWORD_FILE
+    volume-mounts:
+      - src: "/var/run/docker.sock"
+        dest: "/var/run/docker.sock"
+        options: "z"
+      # If artifact_staging_dir lives outside the project, mount it too, e.g.:
+      # - src: "/mnt/transfer"
+      #   dest: "/mnt/transfer"
+      #   options: "z"
+
+  playbook-artifact:
+    enable: false
+
+  logging:
+    level: warning

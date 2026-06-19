@@ -9,6 +9,8 @@
 **/vault.yml
 **/*.vault
 .vault_pass
+.vault-pass
+**/.vault-pass
 .ansible-vault-pass
 .ansible-vault-pass.txt
 
@@ -32,8 +34,13 @@ dist/
 **/.ansible/
 ansible_collections/
 
-# Downloaded collections (use collections/requirements.yml to install)
+# Downloaded collections (collections now live in the EE; see ee/requirements.yml)
 **/collections/ansible_collections/
+
+# --- Execution Environment build outputs ------------------------------------
+# ansible-builder generates a build context here; never commit it.
+ee/context/
+ansible-navigator.log
 
 # --- Python ------------------------------------------------------------------
 __pycache__/

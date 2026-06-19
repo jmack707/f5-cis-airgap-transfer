@@ -62,8 +62,10 @@ into Harbor.
 
 ### Prerequisites
 
-Run `bash setup.sh` from the repo root once. It installs ansible-core, the
-required collections, and verifies Docker and Helm are present.
+Build the Execution Environment once (`bash ../ee/build-ee.sh`) and install
+`ansible-navigator` on this host. ansible-core, the collections, the Docker
+SDK, and `helm` all live inside the EE; the host needs only a container
+runtime and a running Docker daemon. See [`../ee/README.md`](../ee/README.md).
 
 ### Run the pull
 
@@ -71,8 +73,10 @@ required collections, and verifies Docker and Helm are present.
 cp vault.yaml.example vault.yaml
 # edit vault.yaml with real values, then:
 ansible-vault encrypt vault.yaml
+printf '%s' 'your-vault-password' > .vault-pass && chmod 600 .vault-pass
 
-ansible-playbook open-pull/playbooks/pull_artifacts.yaml --ask-vault-pass
+ansible-navigator run open-pull/playbooks/pull_artifacts.yaml \
+  --vault-password-file .vault-pass
 ```
 
 The single play executes six task files in sequence:
@@ -97,10 +101,10 @@ tar -xOf airgap-bundle.tar.gz manifest.json | python3 -m json.tool
 
 ```bash
 # Interactive:
-ansible-playbook open-pull/playbooks/pull_artifacts_remove.yaml
+ansible-navigator run open-pull/playbooks/pull_artifacts_remove.yaml
 
 # CI / non-interactive:
-ansible-playbook open-pull/playbooks/pull_artifacts_remove.yaml \
+ansible-navigator run open-pull/playbooks/pull_artifacts_remove.yaml \
   --extra-vars "confirm_removal=true"
 ```
 

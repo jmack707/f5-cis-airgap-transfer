@@ -13,19 +13,24 @@ cd f5-airgap-k8s
 
 You don't need to install Ansible or Docker just to make doc changes —
 the CI runs lint and syntax-check for you on every PR. If you want to
-exercise the playbooks locally:
+exercise the playbooks locally, both stages run inside the Execution
+Environment (build it once with `bash ee/build-ee.sh`, then run via
+`ansible-navigator` — see `ee/README.md`):
 
-- **Pull side**: see `pull/README.md` — needs Docker, Helm, internet access
-- **Push side**: see `push/README.md` — needs Docker, Helm 3.8+, and a
-  local Docker Registry v2 for testing
+- **Pull side**: see `pull/README.md` — needs a container runtime, a host
+  Docker daemon, and internet access
+- **Push side**: see `push/README.md` — needs a container runtime, a host
+  Docker daemon, and a local Docker Registry v2 for testing
 
 ## Repository Layout
 
-Two projects share one repo. They communicate only through the bundle
-manifest. See each project's `ARCHITECTURE.md`.
+Two stages share one repo and one Execution Environment. The stages
+communicate only through the bundle manifest. See each project's
+`ARCHITECTURE.md` and `ee/README.md`.
 
 ```
 .
+├── ee/        ← Execution Environment definition (ansible-builder)
 ├── pull/      ← internet-side artifact collection
 ├── push/      ← closed-network registry import
 └── .github/   ← CI workflows
@@ -42,9 +47,13 @@ manifest. See each project's `ARCHITECTURE.md`.
    update its `ARCHITECTURE.md` if you changed a design decision or a
    variable's meaning.
 
-3. Push and open a PR. CI runs three jobs:
-   - **yaml-lint** — generic YAML syntax
-   - **syntax-check** — `ansible-playbook --syntax-check` on every playbook
+3. Push and open a PR. CI runs:
+   - **yaml-lint** — generic YAML syntax across `ee/`, `pull/`, `push/`
+   - **syntax-check** — `ansible-playbook --syntax-check` on every playbook,
+     with collections installed from `ee/requirements.yml`
+   - **ee-validate** — `ansible-builder create` validates the EE definition
+   - **shellcheck** — static analysis of `ee/build-ee.sh` and `push/host-prep.sh`
+   - **rhel-syntax-check** — playbook parse on Rocky 9 / UBI 9 filesystems
    - **release-dry-run** — verifies the release workflow would succeed
 
 4. PRs require at least one approval before merge to `main`. Direct pushes
