@@ -215,8 +215,7 @@ See `open-pull/README.md` for the full image and chart version list.
 |-------------|---------|-------------|
 | ansible-core | 2.17 | the EE (`ee/execution-environment.yml`) |
 | community.docker | 3.10.0 | the EE (`ee/requirements.yml`) |
-| kubernetes.core | 2.4.0 | the EE (`ee/requirements.yml`) |
-| Helm | 3.13+ | the EE |
+| Helm | 3.13+ | the EE (helm repo add/pull via CLI) |
 | Docker SDK for Python | 7.0+ | the EE (`ee/requirements.txt`) |
 | `ansible-navigator` | current | `pipx install ansible-navigator` (host) |
 | Container runtime | Docker 24+ / Podman | host (runs the EE) |

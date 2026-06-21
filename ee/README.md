@@ -8,8 +8,12 @@ carries the entire toolchain:
 | Inside the EE | Why |
 |---------------|-----|
 | ansible-core ≥ 2.17 on Python 3.12 | runs the playbooks |
-| `community.docker`, `kubernetes.core`, `ansible.utils` | the collections the transfer playbooks call |
+| `community.docker`, `ansible.utils` | the collections the transfer playbooks call |
 | `f5networks.f5_modules` (+ `ansible.netcommon`) | F5 BIG-IP automation (CIS onboarding, AS3/DO) run through the same EE |
+
+Helm repo management uses the `helm` CLI directly (not `kubernetes.core`), so the
+EE stays minimal — `kubernetes.core` would drag in the `openshift-clients` RPM,
+which isn't packaged for the UBI 9 base.
 | Docker SDK for Python | required by every `community.docker` module |
 | `docker` CLI (client only) | `docker save` / `load` / `tag` / `push` against the **host** daemon |
 | `helm` CLI (≥ 3.13) | `helm pull` and OCI `helm push` (`--plain-http` / `--ca-file`) |

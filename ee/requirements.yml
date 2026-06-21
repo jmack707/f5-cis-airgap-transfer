@@ -19,8 +19,12 @@ collections:
   - name: community.docker
     version: ">=3.10.0"     # docker_login, docker_image (pull/save), etc.
 
-  - name: kubernetes.core
-    version: ">=2.4.0"      # helm_repository module (pull stage)
+  # NOTE: kubernetes.core is intentionally NOT included. Its bindep declares
+  # `openshift-clients` (the oc/kubectl RPM), which isn't in the UBI 9 repos and
+  # breaks the minimal-base build. The only thing the pull stage needed from it
+  # was helm_repository, which is just `helm repo add` — the helm CLI (baked in)
+  # does that directly in pull_charts.yaml. If a future stage needs the k8s/oc
+  # modules, re-add kubernetes.core AND provision kubectl/oc in the EE build.
 
   # --- F5 BIG-IP automation (CIS onboarding, AS3/DO) --------------------------
   # Not called by the transfer playbooks, but baked in so the operator's

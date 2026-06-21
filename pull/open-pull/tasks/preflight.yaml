@@ -80,34 +80,25 @@
       {{ _collections.values() | map('dict2items') | flatten
          | selectattr('key', 'equalto', 'community.docker')
          | map(attribute='value.version') | list }}
-    _k8s_versions: >-
-      {{ _collections.values() | map('dict2items') | flatten
-         | selectattr('key', 'equalto', 'kubernetes.core')
-         | map(attribute='value.version') | list }}
     # Sentinel so an ABSENT collection yields a version that fails the floor
     # cleanly, instead of `| first` throwing on an empty list (which would
     # crash msg templating before our fail_msg could render).
     _docker_ver: "{{ (_docker_versions + ['0.0.0']) | first }}"
-    _k8s_ver: "{{ (_k8s_versions + ['0.0.0']) | first }}"
   ansible.builtin.assert:
     that:
       - _docker_versions | length > 0
       - _docker_ver is version('3.10.0', '>=')
-      - _k8s_versions | length > 0
-      - _k8s_ver is version('2.4.0', '>=')
     fail_msg: >-
-      Required collections are missing or too old (need community.docker
-      >=3.10.0 and kubernetes.core >=2.4.0; found community.docker
-      {{ _docker_ver }}, kubernetes.core {{ _k8s_ver }}). Inside the EE this
-      means ee/requirements.yml is wrong or the EE is stale — fix the pin and
-      rebuild with ee/build-ee.sh.
-    success_msg: >-
-      Collections OK — community.docker {{ _docker_ver }},
-      kubernetes.core {{ _k8s_ver }}
+      community.docker is missing or too old (need >=3.10.0; found
+      {{ _docker_ver }}). Inside the EE this means ee/requirements.yml is wrong
+      or the EE is stale — fix the pin and rebuild with ee/build-ee.sh.
+    success_msg: "Collections OK — community.docker {{ _docker_ver }}"
   tags: [preflight]
   # SECOND gate. Catches the "good ansible, no collections" state that
   # otherwise fails deep in pull_dockerhub.yaml with the cryptic
   # "couldn't resolve module/action 'community.docker.docker_login'".
+  # Helm repo management uses the helm CLI directly (not kubernetes.core),
+  # so only community.docker is asserted here.
 
 - name: Verify required CLI tools are installed
   ansible.builtin.command:

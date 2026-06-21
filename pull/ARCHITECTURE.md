@@ -282,7 +282,7 @@ computed inline by the task files. This is the simplification.
 | `docker pull` | Layer-level idempotent; cache hits report "ok" |
 | `docker_image archive_path:` | Always rewrites the .tar (reports "changed") |
 | `docker logout` | Removes credential or no-ops |
-| `helm repo add force_update:` | Updates URL if changed, otherwise no-op |
+| `helm repo add --force-update` | Overwrites the repo URL; re-adding is a no-op |
 | `helm pull` | Always rewrites the .tgz |
 | Per-file SHA-256 | Recomputes every run; pure function of input |
 | Manifest write | Rewrites every run |
