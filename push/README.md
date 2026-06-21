@@ -73,8 +73,10 @@ sha256sum f5-airgap-ee.tar.gz > f5-airgap-ee.tar.gz.sha256
 sha256sum -c f5-airgap-ee.tar.gz.sha256
 gunzip -c f5-airgap-ee.tar.gz | docker load
 
-# Install the runner (from a local pip mirror / offline wheels):
-pip install ansible-navigator
+# Install the runner from a local mirror / offline wheels. Prefer pipx so it
+# gets its own venv (Ubuntu 24.04 / Debian 12 block system-wide pip — PEP 668):
+pipx install ansible-navigator
+# (offline: pipx install --pip-args "--no-index --find-links /path/to/wheels" ansible-navigator)
 ```
 
 The host itself needs only a container runtime, `ansible-navigator`, a running

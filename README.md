@@ -138,8 +138,15 @@ then run each stage (on a different host) through it.
 ```bash
 git clone https://github.com/jmack707/f5-cis-airgap-transfer.git
 cd f5-cis-airgap-transfer
-pip install ansible-builder ansible-navigator
-bash ee/build-ee.sh                       # builds f5-airgap-ee:latest
+
+# Install the tooling with pipx. Ubuntu 24.04 / Debian 12 block system-wide
+# `pip install` (PEP 668: "externally-managed-environment"); pipx sidesteps it
+# by giving each tool its own venv. (apt install -y pipx, or dnf install -y pipx.)
+pipx install ansible-builder
+pipx install ansible-navigator
+pipx ensurepath        # then open a new shell so the tools are on PATH
+
+bash ee/build-ee.sh    # builds f5-airgap-ee:latest
 ```
 
 ### Internet side
@@ -238,13 +245,15 @@ lives **inside the EE**, so the hosts themselves need very little:
 
 **Build host (internet-connected, builds the EE once):**
 
-- Python 3 + `pip install ansible-builder ansible-navigator`
+- Python 3 + `pipx install ansible-builder` and `pipx install ansible-navigator`
+  (pipx avoids the PEP 668 "externally-managed-environment" error on Ubuntu
+  24.04 / Debian 12; a dedicated venv works too)
 - A container runtime: Docker (default) or Podman
 
 **Both run hosts (where the stages execute):**
 
 - A container runtime to run the EE: Docker (default) or Podman
-- `ansible-navigator` (`pip install ansible-navigator`)
+- `ansible-navigator` (`pipx install ansible-navigator`)
 - Docker Engine 24+ with the containerd snapshotter disabled — the EE drives
   this host daemon over the mounted socket (see
   [`push/ARCHITECTURE.md`](push/ARCHITECTURE.md) for the `daemon.json`

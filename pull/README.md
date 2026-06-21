@@ -57,7 +57,12 @@ The toolchain ships as an Execution Environment image. Build it once on an
 internet-connected host, then install the runner:
 
 ```bash
-pip install ansible-builder ansible-navigator
+# Ubuntu 24.04 / Debian 12 block system-wide `pip install` (PEP 668); use pipx
+# (apt install -y pipx) so each tool gets its own venv:
+pipx install ansible-builder
+pipx install ansible-navigator
+pipx ensurepath               # then open a new shell
+
 bash ../ee/build-ee.sh        # builds f5-airgap-ee:latest
 ```
 
@@ -213,7 +218,7 @@ See `open-pull/README.md` for the full image and chart version list.
 | kubernetes.core | 2.4.0 | the EE (`ee/requirements.yml`) |
 | Helm | 3.13+ | the EE |
 | Docker SDK for Python | 7.0+ | the EE (`ee/requirements.txt`) |
-| `ansible-navigator` | current | `pip install ansible-navigator` (host) |
+| `ansible-navigator` | current | `pipx install ansible-navigator` (host) |
 | Container runtime | Docker 24+ / Podman | host (runs the EE) |
 | Docker Engine | 24+ | host (the EE drives it via the mounted socket) |
 

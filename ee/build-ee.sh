@@ -7,8 +7,10 @@
 # RPMs, pip packages, the docker/helm CLIs, and the Galaxy collections).
 #
 # PREREQUISITES (build host only — NOT the air-gapped host)
-#   - python3 + pip
-#   - pip install ansible-builder        (>= 3.0)
+#   - python3
+#   - ansible-builder (>= 3.0). On Ubuntu 24.04 / Debian 12, system-wide pip is
+#     blocked (PEP 668), so install with pipx:  pipx install ansible-builder
+#     (inside a venv, plain `pip install ansible-builder` also works)
 #   - a container runtime: docker (default) or podman
 #
 # USAGE
@@ -33,7 +35,8 @@ cd "$(dirname "$0")"
 
 if ! command -v ansible-builder >/dev/null 2>&1; then
   echo "ERROR: ansible-builder is not installed on this build host."
-  echo "       Install it first:  pip install ansible-builder"
+  echo "       Install it first:  pipx install ansible-builder"
+  echo "       (Ubuntu 24.04/Debian 12 block system-wide pip; pipx avoids that.)"
   exit 1
 fi
 

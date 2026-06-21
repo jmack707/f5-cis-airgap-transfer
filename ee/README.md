@@ -47,8 +47,9 @@ You need a build host with outbound internet (it pulls the base image, RPMs,
 pip packages, the docker/helm CLIs, and the collections).
 
 ```bash
-# 1. Install the builder (once)
-pip install ansible-builder        # >= 3.0
+# 1. Install the builder (once). On Ubuntu 24.04 / Debian 12, system-wide
+#    `pip install` is blocked (PEP 668) — use pipx (apt install -y pipx):
+pipx install ansible-builder       # >= 3.0  (pip works inside a venv too)
 
 # 2. Build the image (default tag: f5-airgap-ee:latest, runtime: docker)
 cd ee

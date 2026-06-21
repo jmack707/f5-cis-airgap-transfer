@@ -76,13 +76,16 @@ cd f5-cis-airgap-transfer
 ### 4. Install the build tooling
 
 The EE is built with `ansible-builder`; it's run with `ansible-navigator`.
-Both are pip packages. EL9 ships Python 3.9 as the system `python3`; install a
-newer one for these tools.
+EL9 ships Python 3.9 as the system `python3`; install a newer one, then use
+`pipx` so each tool gets its own isolated venv (this also matches the Ubuntu
+path, where system-wide `pip install` is blocked by PEP 668).
 
 ```bash
 sudo dnf install -y python3.12 python3.12-pip
-python3.12 -m pip install --user ansible-builder ansible-navigator
+python3.12 -m pip install --user pipx
 export PATH="$HOME/.local/bin:$PATH"
+pipx install ansible-builder
+pipx install ansible-navigator
 ansible-builder --version && ansible-navigator --version
 ```
 
