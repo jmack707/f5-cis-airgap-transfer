@@ -157,8 +157,7 @@
 # -----------------------------------------------------------------------------
 
 - name: Verify required CLI tools are installed (base)
-  ansible.builtin.command:
-    cmd: "which {{ item }}"
+  ansible.builtin.shell: "command -v {{ item }}"
   loop:
     - docker         # docker load, tag, push
     - helm           # OCI chart push (3.8.0+ check below)
@@ -167,10 +166,11 @@
   changed_when: false
   register: tool_checks
   failed_when: tool_checks.rc != 0
+  # `command -v` (shell builtin) rather than `which`: the UBI 9 base the EE is
+  # built from doesn't ship `which` (RHEL 9 deprecated it).
 
 - name: Verify openssl is present (HTTPS only)
-  ansible.builtin.command:
-    cmd: "which openssl"
+  ansible.builtin.shell: "command -v openssl"
   changed_when: false
   when: not (ccn_registry_insecure | bool)
   # Only the HTTPS path uses openssl (to validate the CA is PEM-encoded

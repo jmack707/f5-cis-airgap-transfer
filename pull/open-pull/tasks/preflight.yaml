@@ -101,8 +101,7 @@
   # so only community.docker is asserted here.
 
 - name: Verify required CLI tools are installed
-  ansible.builtin.command:
-    cmd: "which {{ item }}"
+  ansible.builtin.shell: "command -v {{ item }}"
   loop:
     - docker         # docker save (image export)
     - helm           # helm pull (chart download)
@@ -112,6 +111,9 @@
   register: tool_checks
   failed_when: tool_checks.rc != 0
   tags: [preflight]
+  # `command -v` (a POSIX shell builtin) rather than `which`: the UBI 9 base the
+  # EE is built from doesn't ship the `which` binary (RHEL 9 deprecated it). All
+  # four tools are baked into the EE; this just confirms they're on PATH.
 
 - name: Identify filesystem mount for artifact staging directory
   ansible.builtin.set_fact:
