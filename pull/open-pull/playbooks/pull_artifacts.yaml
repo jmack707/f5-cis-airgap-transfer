@@ -50,6 +50,23 @@
     - ../../vault.yaml
 
   tasks:
+    - name: Ensure output directories exist (covers tag-scoped runs in the EE)
+      ansible.builtin.file:
+        path:  "{{ item }}"
+        state: directory
+        mode:  "0755"
+      loop:
+        - "{{ artifact_staging_dir }}"
+        - "{{ image_tar_dir }}"
+        - "{{ helm_chart_dir }}"
+      tags: [always]
+      # Each ansible-navigator run is a FRESH EE container, so directories made
+      # by a previous run don't carry over — only bind-mounted host paths do.
+      # preflight creates these too, but tag-scoped runs (--tags pull_quay,
+      # --tags bundle, …) skip preflight, so the save/pull tasks would hit
+      # "No such file or directory". The `always` tag guarantees the dirs for
+      # every invocation regardless of --tags. Idempotent.
+
     - name: Preflight checks
       ansible.builtin.include_tasks: ../tasks/preflight.yaml
       tags: [preflight]
