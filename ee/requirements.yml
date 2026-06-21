@@ -2,9 +2,9 @@
 # =============================================================================
 # ee/requirements.yml — Galaxy collections baked into the EE
 #
-# This is now the SINGLE source of truth for the collection set (the old
-# per-side pull/collections/requirements.yml and push/collections/requirements.yml
-# are gone — both stages run inside the same EE).
+# This is the SINGLE source of truth for the collection set (the old per-side
+# pull/collections/requirements.yml and push/collections/requirements.yml are
+# gone — both stages run inside the same EE).
 #
 # ansible-builder installs these into the image at build time, under
 # /usr/share/ansible/collections, which is on the default collection search
@@ -15,11 +15,25 @@
 # =============================================================================
 
 collections:
+  # --- used by the transfer playbooks today --------------------------------
   - name: community.docker
     version: ">=3.10.0"     # docker_login, docker_image (pull/save), etc.
 
   - name: kubernetes.core
     version: ">=2.4.0"      # helm_repository module (pull stage)
 
+  # --- F5 BIG-IP automation (CIS onboarding, AS3/DO) --------------------------
+  # Not called by the transfer playbooks, but baked in so the operator's
+  # BIG-IP-side automation runs through the SAME EE. f5_modules talks to BIG-IP
+  # over REST via an httpapi connection, which is why ansible.netcommon is a
+  # hard dependency (pinned explicitly for offline/air-gap reproducibility —
+  # ansible-galaxy would otherwise resolve it implicitly).
+  - name: f5networks.f5_modules
+    version: ">=1.27.0"
+
+  - name: ansible.netcommon
+    version: ">=2.0.0"      # httpapi connection plugin used by f5_modules
+
+  # --- shared helpers (data/network filters); retained for future stages -----
   - name: ansible.utils
-    version: ">=2.10.0"     # shared network/data helpers
+    version: ">=2.10.0"

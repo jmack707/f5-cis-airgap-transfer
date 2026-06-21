@@ -13,3 +13,6 @@ docker>=7.0.0
 
 # Pulled in transitively by docker, pinned here so the floor is explicit.
 requests>=2.31.0
+
+# Required by f5networks.f5_modules (version parsing in several BIG-IP modules).
+packaging>=21.0
