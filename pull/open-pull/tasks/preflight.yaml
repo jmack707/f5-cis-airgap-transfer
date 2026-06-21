@@ -115,32 +115,6 @@
   # EE is built from doesn't ship the `which` binary (RHEL 9 deprecated it). All
   # four tools are baked into the EE; this just confirms they're on PATH.
 
-- name: Identify filesystem mount for artifact staging directory
-  ansible.builtin.set_fact:
-    staging_mount: >-
-      {{ ansible_facts['mounts']
-         | selectattr('mount', 'in', artifact_staging_dir)
-         | sort(attribute='mount') | last }}
-  tags: [preflight]
-  # Walks the mount table to find the longest mount prefix containing
-  # artifact_staging_dir. If artifact_staging_dir is /mnt/usb/foo and
-  # /mnt/usb is its own mount, the disk check uses /mnt/usb's
-  # filesystem — not the root partition.
-
-- name: Assert sufficient free disk space
-  ansible.builtin.assert:
-    that:
-      - (staging_mount.size_available | int) >= (min_free_disk_gb | int * 1024 * 1024 * 1024)
-    fail_msg: >-
-      Insufficient disk space on {{ staging_mount.mount }}.
-      Available : {{ (staging_mount.size_available | int / 1073741824) | round(1) }} GB
-      Required  : {{ min_free_disk_gb }} GB
-      Free up space or lower min_free_disk_gb in group_vars/all/main.yaml.
-    success_msg: >-
-      Disk check passed — {{ (staging_mount.size_available | int / 1073741824) | round(1) }} GB
-      available on {{ staging_mount.mount }}.
-  tags: [preflight]
-
 - name: Ensure staging directories exist
   ansible.builtin.file:
     path:  "{{ item }}"
@@ -150,4 +124,35 @@
     - "{{ artifact_staging_dir }}"
     - "{{ image_tar_dir }}"
     - "{{ helm_chart_dir }}"
+  tags: [preflight]
+  # Created BEFORE the disk check so `df` below has a real path to measure.
+
+- name: Measure free space on the staging filesystem
+  ansible.builtin.command:
+    cmd: "df -P -B1 {{ artifact_staging_dir }}"
+  register: staging_df
+  changed_when: false
+  tags: [preflight]
+  # `df` reports the filesystem that actually holds artifact_staging_dir — and,
+  # crucially, it works the same inside the EE as on bare metal. The previous
+  # approach derived this from ansible_facts['mounts'], but a container's mount
+  # table doesn't expose the bind-mounted host path the same way, so the lookup
+  # came back empty. `df -P` prints a header line then one data line; with -B1
+  # the columns are in bytes: [fs, total, used, AVAIL, capacity, mountpoint].
+
+- name: Assert sufficient free disk space
+  vars:
+    _avail_bytes: "{{ staging_df.stdout_lines[1].split()[3] }}"
+    _mountpoint:  "{{ staging_df.stdout_lines[1].split()[5] }}"
+  ansible.builtin.assert:
+    that:
+      - (_avail_bytes | int) >= (min_free_disk_gb | int * 1024 * 1024 * 1024)
+    fail_msg: >-
+      Insufficient disk space on {{ _mountpoint }}.
+      Available : {{ (_avail_bytes | int / 1073741824) | round(1) }} GB
+      Required  : {{ min_free_disk_gb }} GB
+      Free up space or lower min_free_disk_gb in group_vars/all/main.yaml.
+    success_msg: >-
+      Disk check passed — {{ (_avail_bytes | int / 1073741824) | round(1) }} GB
+      available on {{ _mountpoint }}.
   tags: [preflight]

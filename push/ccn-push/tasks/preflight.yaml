@@ -224,28 +224,39 @@
 # Filesystem capacity check on the staging directory's mount
 # -----------------------------------------------------------------------------
 
-- name: Identify filesystem mount for staging directory
-  ansible.builtin.set_fact:
-    staging_mount: >-
-      {{ ansible_facts['mounts']
-         | selectattr('mount', 'in', ccn_staging_dir)
-         | sort(attribute='mount') | last }}
-  # Walks the mount table looking for the longest mount prefix that
-  # contains ccn_staging_dir. If /srv is its own mount, we get /srv;
-  # otherwise we get /. This is the filesystem that needs the free
-  # space, not the root partition.
+- name: Ensure staging directory exists
+  ansible.builtin.file:
+    path:  "{{ ccn_staging_dir }}"
+    state: directory
+    mode:  "0755"
+  # Created BEFORE the disk check so `df` below has a real path to measure.
+  # become: true is intentionally NOT used — see the note on the original
+  # placement of this task below.
+
+- name: Measure free space on the staging filesystem
+  ansible.builtin.command:
+    cmd: "df -P -B1 {{ ccn_staging_dir }}"
+  register: staging_df
+  changed_when: false
+  # `df` reports the filesystem that actually holds ccn_staging_dir and behaves
+  # identically inside the EE and on bare metal. The previous approach used
+  # ansible_facts['mounts'], but a container's mount table doesn't expose the
+  # bind-mounted host path the same way, so the lookup came back empty.
 
 - name: Assert sufficient free disk space
+  vars:
+    _avail_bytes: "{{ staging_df.stdout_lines[1].split()[3] }}"
+    _mountpoint:  "{{ staging_df.stdout_lines[1].split()[5] }}"
   ansible.builtin.assert:
     that:
-      - (staging_mount.size_available | int) >= (ccn_min_free_disk_gb | int * 1024 * 1024 * 1024)
+      - (_avail_bytes | int) >= (ccn_min_free_disk_gb | int * 1024 * 1024 * 1024)
     fail_msg: >-
-      Insufficient disk space on {{ staging_mount.mount }}.
-      Available : {{ (staging_mount.size_available | int / 1073741824) | round(1) }} GB
+      Insufficient disk space on {{ _mountpoint }}.
+      Available : {{ (_avail_bytes | int / 1073741824) | round(1) }} GB
       Required  : {{ ccn_min_free_disk_gb }} GB
     success_msg: >-
-      Disk check passed — {{ (staging_mount.size_available | int / 1073741824) | round(1) }} GB
-      available on {{ staging_mount.mount }}.
+      Disk check passed — {{ (_avail_bytes | int / 1073741824) | round(1) }} GB
+      available on {{ _mountpoint }}.
 
 # -----------------------------------------------------------------------------
 # Registry reachability
@@ -276,13 +287,9 @@
   # profile applies, and login/push will fail more loudly if auth is
   # wrong. For HTTPS we pass the same CA we already validated above so
   # the check is genuinely end-to-end.
-
-- name: Ensure staging directory exists
-  ansible.builtin.file:
-    path:  "{{ ccn_staging_dir }}"
-    state: directory
-    mode:  "0755"
-  # become: true is intentionally NOT used. If the operator can't create
-  # the staging directory as themselves, they should either run with
-  # become elsewhere or change ccn_staging_dir in group_vars to a path
-  # they own. Asking for root just to make a working directory is wrong.
+  #
+  # NOTE: ccn_staging_dir is created earlier (before the disk check) without
+  # become: true on purpose. If the operator can't create the staging
+  # directory as themselves, they should run with become elsewhere or point
+  # ccn_staging_dir at a path they own — asking for root just to make a
+  # working directory is wrong.

@@ -42,9 +42,9 @@
 #   robot token could linger in ~/.docker/config.json after a failed
 #   run — a meaningful credential-hygiene issue in a shared host.
 #
-#   gather_facts: true is required because preflight uses
-#   ansible_facts['mounts'] for the disk space check. The few-hundred-ms
-#   cost is negligible vs. having to gate the disk check separately.
+#   gather_facts: true is kept for parity and any fact-dependent reporting;
+#   the disk-space check uses `df` (not the mounts fact), so it behaves the
+#   same inside the EE as on bare metal.
 #
 #   vars_files order matters:
 #     1. group_vars/all/main.yaml — operational defaults

@@ -32,8 +32,9 @@
 #                              skipped silently
 #
 # DESIGN NOTES
-#   gather_facts: true is required because preflight uses
-#   ansible_facts['mounts'] for the disk space check.
+#   gather_facts: true is required because the bundle stage stamps the manifest
+#   with ansible_facts['date_time']. (The disk-space check uses `df`, not the
+#   mounts fact, so it works the same inside the EE.)
 #
 #   Each registry has its own task file because the auth mechanics differ
 #   meaningfully (Docker Hub: user+password; Quay: anonymous; F5 NGINX:
