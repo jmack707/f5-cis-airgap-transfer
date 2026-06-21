@@ -14,6 +14,12 @@ carries the entire toolchain:
 | `helm` CLI (≥ 3.13) | `helm pull` and OCI `helm push` (`--plain-http` / `--ca-file`) |
 | `tar`, `gzip`, `openssl`, `sha256sum` | bundling + integrity checks |
 
+It is built **from a minimal base** — `registry.access.redhat.com/ubi9/ubi-minimal`
+(microdnf, glibc) — chosen for size, since the image is physically carried
+across the air gap. The `docker` and `helm` clients are installed from their
+official static tarballs (no package repos), and the lean package set avoids a
+compiler because ansible-core's Python deps install from manylinux wheels.
+
 The EE **replaces** the old per-host `setup.sh` + venv + `ansible-galaxy`
 flow. Hosts no longer need ansible, collections, or Python set up directly —
 they only need a container runtime (Docker or Podman) and the host Docker
@@ -102,7 +108,8 @@ air-gapped host needs.
 | A Python dep | `requirements.txt` | rebuild |
 | ansible-core floor | `dependencies.ansible_core` in `execution-environment.yml` (and the matching assert in both `preflight.yaml`) | rebuild |
 | helm version | `HELM_VERSION` in `execution-environment.yml` | rebuild |
-| base OS | `images.base_image` in `execution-environment.yml` | rebuild |
+| docker client version | `DOCKER_VERSION` in `execution-environment.yml` | rebuild |
+| base OS | `images.base_image` (+ `options.package_manager_path` if the package manager changes) in `execution-environment.yml` | rebuild |
 
 After rebuilding, re-load the image on every host that uses it (air-gapped
 hosts via the `docker save` / `docker load` procedure above).

@@ -250,7 +250,7 @@ lives **inside the EE**, so the hosts themselves need very little:
   [`push/ARCHITECTURE.md`](push/ARCHITECTURE.md) for the `daemon.json`
   configuration)
 
-The EE's own base OS is Rocky Linux 9 (independent of the host OS). The hosts
+The EE's own base OS is UBI 9 minimal (independent of the host OS). The hosts
 themselves can be Ubuntu 24.04 (verified baseline) or Rocky/RHEL 9.x — the EE
 makes the host OS largely irrelevant to the Ansible toolchain. Helm 3.13+ and
 ansible-core 2.17+ are baked into the EE; nothing to install on the host.

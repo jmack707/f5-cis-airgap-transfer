@@ -20,25 +20,36 @@
 #   Build it ONCE (see ee/README.md), then run the playbooks through it with
 #   ansible-navigator (see pull/ansible-navigator.yml, push/ansible-navigator.yml).
 #
-# WHY A RHEL-FAMILY BASE
+# WHY A MINIMAL UBI 9 BASE
 #   The project targets Ubuntu and RHEL/Rocky 9 hosts. The EE's own base OS is
-#   independent of the host OS — it runs in a container — but we pick Rocky 9
-#   to match the enterprise environments this tooling lands in. EL9 ships
-#   Python 3.9 as the system python3, below ansible-core's 3.10+ floor, so we
-#   pull in python3.12 and point the build at it via dependencies.python_interpreter.
+#   independent of the host OS — it runs in a container — so we use the
+#   smallest RHEL-family base that still runs ansible cleanly:
+#   ubi9/ubi-minimal. It ships `microdnf` (not full dnf) and is ~3-4x smaller
+#   than the Rocky/CentOS base, which matters because this image is physically
+#   carried across the air gap (docker save | gzip).
+#
+#   UBI 9 is glibc-based, so the manylinux wheels ansible-core needs
+#   (cryptography, PyYAML, …) install without a compiler — that lets us keep
+#   the image lean (no gcc / -devel). UBI 9 also packages python3.12, which
+#   clears ansible-core's Python 3.10+ floor (the system python is 3.9).
 #
 # THE DOCKER CLIENT, NOT A DOCKER DAEMON
-#   The EE contains only the docker *client*. At run time the host's Docker
-#   socket is bind-mounted in (see the ansible-navigator configs), so every
-#   `docker` invocation and every community.docker module talks to the HOST
-#   daemon. The EE never runs its own dockerd (no docker-in-docker).
+#   The EE contains only the docker *client*, installed from Docker's official
+#   static binary tarball (no package repo needed on a minimal base). At run
+#   time the host's Docker socket is bind-mounted in (see the ansible-navigator
+#   configs), so every `docker` invocation and every community.docker module
+#   talks to the HOST daemon. The EE never runs its own dockerd.
 # =============================================================================
 
 version: 3
 
 images:
   base_image:
-    name: quay.io/rockylinux/rockylinux:9
+    name: registry.access.redhat.com/ubi9/ubi-minimal:latest
+
+# ubi-minimal uses microdnf — tell ansible-builder to drive that, not dnf.
+options:
+  package_manager_path: /usr/bin/microdnf
 
 dependencies:
   # Use Python 3.12 for ansible-core and all module execution. package_system
@@ -60,10 +71,16 @@ dependencies:
 
 additional_build_steps:
   append_final:
-    # --- docker CLI (client only) -------------------------------------------
-    - RUN dnf install -y dnf-plugins-core
-    - RUN dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-    - RUN dnf install -y docker-ce-cli && dnf clean all
+    # --- docker CLI (client only), from the official static tarball ---------
+    # A minimal base has no dnf config-manager, so we skip the docker-ce repo
+    # entirely and lift just the `docker` client binary out of Docker's static
+    # release. Bump DOCKER_VERSION to take a newer client.
+    - >-
+      RUN DOCKER_VERSION=27.3.1 &&
+      curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" -o /tmp/docker.tgz &&
+      tar -xzf /tmp/docker.tgz -C /tmp &&
+      install -m 0755 /tmp/docker/docker /usr/local/bin/docker &&
+      rm -rf /tmp/docker.tgz /tmp/docker
 
     # --- helm CLI -----------------------------------------------------------
     # 3.13+ is required for `helm push --plain-http` (HTTP registries) and
