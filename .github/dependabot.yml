@@ -1,0 +1,21 @@
+# =============================================================================
+# .github/dependabot.yml
+#
+# Keeps the GitHub Actions pinned by commit SHA in .github/workflows/ current.
+# Dependabot opens PRs that bump the SHA and update the trailing "# vX.Y.Z"
+# comment, so the pins stay both immutable AND maintained. PRs run through the
+# branch protection on main like any other change.
+# =============================================================================
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    # Collapse all action bumps into a single PR to keep review noise down.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
