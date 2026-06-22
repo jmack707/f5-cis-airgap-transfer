@@ -1,0 +1,18 @@
+# =============================================================================
+# ee/requirements.txt — Python packages baked into the EE
+#
+# ansible-builder installs these with the EE's Python 3.12 (the interpreter
+# declared in execution-environment.yml). They are the Python-side
+# dependencies the modules need at run time.
+# =============================================================================
+
+# Docker SDK for Python — required by every community.docker module. Without
+# it the image tasks fail with "Failed to import the required Python library
+# (Docker SDK for Python)".
+docker>=7.0.0
+
+# Pulled in transitively by docker, pinned here so the floor is explicit.
+requests>=2.31.0
+
+# Required by f5networks.f5_modules (version parsing in several BIG-IP modules).
+packaging>=21.0

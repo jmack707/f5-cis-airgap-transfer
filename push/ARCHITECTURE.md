@@ -21,18 +21,24 @@ For operator-facing instructions, see `README.md`.
 
 ## Architecture
 
-The push stage runs on a closed-network host that has physically received
-the bundle from the pull stage. It verifies integrity, then publishes
-every artifact to the local registry.
+The push stage runs inside the f5-airgap Execution Environment on a
+closed-network host that has physically received the bundle (and the EE
+image) from the pull stage. It verifies integrity, then publishes every
+artifact to the local registry over the host Docker socket mounted into the EE.
 
 ```
-preflight ─► configure_insecure_registry ─► extract_bundle ─► verify_manifest
-                       ↓                                              ↓
-                  trust_ca                                  build_push_plan
-                       ↓                                              ↓
-                       └──────────────────────────────────────► block: login → push images → push charts
-                                                                       always: logout
+host-prep.sh (on the host, outside the EE: insecure-registries / CA trust)
+        │
+        ▼
+preflight ─► extract_bundle ─► verify_manifest ─► build_push_plan
+                                                          ↓
+        block: login → push images → push charts
+        always: logout
 ```
+
+The host Docker-daemon configuration (the former `configure_insecure_registry`
+and `trust_ca` tasks) cannot run inside a container, so it lives in
+`host-prep.sh` and runs once on the host before the EE push.
 
 The login/push/logout block uses `block/always` so logout fires even
 when an earlier task fails. This prevents stale credentials from
@@ -189,13 +195,13 @@ hygiene problem on a shared host.
 |----------|------|---------|---------|---------|
 | `ccn_bundle_incoming_path` | str | `/srv/airgap-incoming/airgap-bundle.tar.gz` | preflight, extract | Where to find the bundle |
 | `ccn_staging_dir` | str | `/srv/airgap-staging` | preflight, extract, verify, build_push_plan | Working directory |
-| `ccn_registry_ca_path` | str | `/etc/ssl/certs/internal-ca.crt` | preflight, trust_ca | Private CA (HTTPS) |
+| `ccn_registry_ca_path` | str | `/etc/ssl/certs/internal-ca.crt` | preflight, login, push_charts (helm `--ca-file`); host-prep.sh | Private CA (HTTPS) |
 | `ccn_min_free_disk_gb` | int | 30 | preflight | Disk threshold |
 | `image_push_map` | dict | (8-entry default) | build_push_plan | `image_basename → target_repo` |
 | `chart_push_map` | dict | (3-entry default) | build_push_plan | `chart_basename → target_oci_path` |
 | `ccn_registry_endpoint` | computed | derived | Multiple | `host:port` form |
-| `ccn_registry_host` | from vault | — | login, configure_insecure | Endpoint host |
-| `ccn_registry_port` | from vault | — | login, configure_insecure, preflight | Endpoint port |
+| `ccn_registry_host` | from vault | — | login; host-prep.sh | Endpoint host |
+| `ccn_registry_port` | from vault | — | login, preflight; host-prep.sh | Endpoint port |
 | `ccn_registry_insecure` | from vault | — | All TLS-conditional tasks | HTTP toggle |
 | `ccn_registry_auth_required` | from vault | — | login, logout | Auth toggle |
 | `ccn_registry_robot_username` | from vault | — | login | Robot username |
@@ -237,11 +243,14 @@ Example: `oci://registry.example.com:5000/f5/charts/f5-bigip-ctlr:0.0.35`
 
 ## Task File Reference
 
+Host Docker-daemon setup is no longer a task file — it lives in `host-prep.sh`
+(run on the host before the EE push). The remaining task files all run inside
+the EE:
+
 | File | Inputs | Outputs | Idempotent | Side effects |
 |------|--------|---------|------------|--------------|
+| `host-prep.sh` (host, not EE) | host/port/insecure/CA | None | Yes (gated restart) | Edits `/etc/docker/daemon.json` + restart, or installs CA to `/etc/docker/certs.d/<host>/ca.crt` |
 | `preflight.yaml` | All path vars, profile booleans | bundle stats | Yes | Creates staging dir |
-| `configure_insecure_registry.yaml` | `insecure: true` | None | Yes (gated restart) | Edits `/etc/docker/daemon.json`, may restart dockerd |
-| `trust_ca.yaml` | `insecure: false`, CA path | None | Yes | Copies CA to `/etc/docker/certs.d/<host>/ca.crt` |
 | `extract_bundle.yaml` | Bundle path, staging dir | `bundle_manifest` fact | `creates:` marker | Extracts bundle into staging |
 | `verify_manifest.yaml` | `bundle_manifest`, staging dir | None | Read-only | None |
 | `build_push_plan.yaml` | `bundle_manifest`, push maps | `push_plan`, `chart_push_plan` | Pure function | None |
@@ -256,9 +265,8 @@ Example: `oci://registry.example.com:5000/f5/charts/f5-bigip-ctlr:0.0.35`
 
 | Task | Re-run behavior |
 |------|-----------------|
+| `host-prep.sh` (host) | First run writes daemon.json + restarts / installs CA; re-runs are no-ops when already correct |
 | Preflight | Pure no-op on second run |
-| Configure insecure-registry | First run writes file + restarts; subsequent runs don't restart |
-| Trust CA | Copy module compares checksums; rewrites only on diff |
 | Extract bundle | `creates:` marker skips re-extraction |
 | Verify manifest | Always recomputes (read-only) |
 | Build push plan | Pure function of inputs |
@@ -277,16 +285,17 @@ Example: `oci://registry.example.com:5000/f5/charts/f5-bigip-ctlr:0.0.35`
 |---------|-------------|----------|
 | Bundle missing | preflight | Place bundle at `ccn_bundle_incoming_path` |
 | Outer SHA-256 mismatch | preflight | Re-transfer the bundle |
-| Helm < 3.8.0 | preflight | Upgrade Helm |
-| CA file missing | preflight (HTTPS) | Fix `ccn_registry_ca_path` |
+| Helm < 3.8.0 | preflight | Rebuild the EE with a newer helm |
+| CA file missing | preflight (HTTPS) | Fix `ccn_registry_ca_path` / mount it into the EE |
 | CA not PEM | preflight (HTTPS) | Convert with `openssl x509 -inform DER` |
 | Registry TCP unreachable | preflight | Firewall, DNS, or registry process down |
 | Inner SHA-256 mismatch | verify_manifest | Bundle corrupted or manifest stale; rebuild on pull side |
 | Missing push_repo mapping | build_push_plan | Add basename entry to `image_push_map` or `chart_push_map` |
 | Token wrong/expired (401) | login | Re-issue robot token, update vault |
 | Token lacks permission (403) | push | Fix RBAC on registry |
-| HTTP-as-HTTPS error | push | `ccn_registry_insecure` should be `true` |
-| x509 unknown authority | push | CA trust not in place; verify trust_ca ran |
+| HTTP-as-HTTPS error | push (docker) | `ccn_registry_insecure` should be `true`; re-run `host-prep.sh --insecure` |
+| x509 unknown authority (docker) | push | CA trust not in place; re-run `host-prep.sh --ca-path ...` |
+| x509 unknown authority (helm) | push_charts | CA not mounted into EE / `--ca-file` path wrong; see `ansible-navigator.yml` |
 
 ---
 
@@ -295,17 +304,20 @@ Example: `oci://registry.example.com:5000/f5/charts/f5-bigip-ctlr:0.0.35`
 ### Dry-run
 
 ```bash
-ansible-playbook ccn-push/playbooks/push_artifacts.yaml --ask-vault-pass --check --diff
+ansible-navigator run ccn-push/playbooks/push_artifacts.yaml \
+  --vault-password-file .vault-pass --check --diff
 ```
 
 ### Targeted runs
 
 ```bash
 # Bundle integrity check only (no push)
-ansible-playbook ccn-push/playbooks/push_artifacts.yaml --ask-vault-pass --tags extract,verify
+ansible-navigator run ccn-push/playbooks/push_artifacts.yaml \
+  --vault-password-file .vault-pass --tags extract,verify
 
 # Skip preflight/extract/verify; assume staging is already populated
-ansible-playbook ccn-push/playbooks/push_artifacts.yaml --ask-vault-pass --tags push
+ansible-navigator run ccn-push/playbooks/push_artifacts.yaml \
+  --vault-password-file .vault-pass --tags push
 ```
 
 ### Verifying registry state after push

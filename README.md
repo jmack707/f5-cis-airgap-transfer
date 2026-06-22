@@ -114,25 +114,55 @@ All versions are managed by variables at the top of
 `pull/group_vars/all/main.yaml`. Bumping a version is a one-line
 change.
 
+## How it runs: Ansible Execution Environment
+
+Both stages run inside a single **Ansible Execution Environment (EE)** — a
+container image, built once with `ansible-builder`, that carries ansible-core,
+the required collections, the Docker SDK, and the `docker`/`helm` CLIs. You
+run the playbooks through it with `ansible-navigator`. Hosts no longer install
+ansible, collections, or Python directly; they only need a container runtime
+and the Docker daemon the pipeline drives.
+
+The EE ships only the Docker **client** — the host's Docker socket is mounted
+in at run time, so every image operation hits the host daemon (no
+docker-in-docker). See [`ee/README.md`](ee/README.md) for the full build and
+offline-transfer procedure.
+
 ## Quick start
 
-The fastest path from cloning to a populated registry. Each stage runs
-on a different host.
+The fastest path from cloning to a populated registry. Build the EE once,
+then run each stage (on a different host) through it.
+
+### Build the EE (once, on an internet-connected build host)
+
+```bash
+git clone https://github.com/jmack707/f5-cis-airgap-transfer.git
+cd f5-cis-airgap-transfer
+
+# Install the tooling with pipx. Ubuntu 24.04 / Debian 12 block system-wide
+# `pip install` (PEP 668: "externally-managed-environment"); pipx sidesteps it
+# by giving each tool its own venv. (apt install -y pipx, or dnf install -y pipx.)
+pipx install ansible-builder
+pipx install ansible-navigator
+pipx ensurepath        # then open a new shell so the tools are on PATH
+
+bash ee/build-ee.sh    # builds f5-airgap-ee:latest
+```
 
 ### Internet side
 
 ```bash
-git clone https://github.com/jmack707/f5-cis-airgap-transfer.git
 cd f5-cis-airgap-transfer/pull
 
 # Set up credentials (one-time)
 cp vault.yaml.example vault.yaml
 nano vault.yaml                 # fill in Docker Hub and F5 NGINX JWT credentials
 ansible-vault encrypt vault.yaml
+printf '%s' 'your-vault-password' > .vault-pass && chmod 600 .vault-pass
 
-# Install dependencies and run the pull
-bash setup.sh
-ansible-playbook open-pull/playbooks/pull_artifacts.yaml --ask-vault-pass
+# Run the pull through the EE
+ansible-navigator run open-pull/playbooks/pull_artifacts.yaml \
+  --vault-password-file .vault-pass
 ```
 
 This produces `artifacts/airgap-bundle.tar.gz` (~300 MB) and
@@ -141,21 +171,37 @@ closed-network host by whatever means your security policy allows.
 
 ### Closed-network side
 
+The air-gapped host can't build the EE, so carry the image across the gap too
+(see [`ee/README.md`](ee/README.md)):
+
 ```bash
-git clone https://github.com/jmack707/f5-cis-airgap-transfer.git
+# On the build host:
+docker save f5-airgap-ee:latest | gzip > f5-airgap-ee.tar.gz
+# …transfer f5-airgap-ee.tar.gz across the gap, then on the closed host:
+gunzip -c f5-airgap-ee.tar.gz | docker load
+```
+
+Then:
+
+```bash
 cd f5-cis-airgap-transfer/push
 
 cp vault.yaml.example vault.yaml
 nano vault.yaml                 # fill in your registry endpoint and credentials
 ansible-vault encrypt vault.yaml
+printf '%s' 'your-vault-password' > .vault-pass && chmod 600 .vault-pass
 
 # Place the bundle where the playbook expects it
 sudo mkdir -p /srv/airgap-incoming /srv/airgap-staging
 sudo chown -R $(whoami): /srv/airgap-incoming /srv/airgap-staging
 cp /path/to/airgap-bundle.tar.gz* /srv/airgap-incoming/
 
-bash setup.sh
-ansible-playbook ccn-push/playbooks/push_artifacts.yaml --ask-vault-pass
+# One-time HOST Docker-daemon prep (can't run inside the EE):
+sudo ./host-prep.sh --host registry.example.com --port 5000 --insecure
+
+# Run the push through the EE
+ansible-navigator run ccn-push/playbooks/push_artifacts.yaml \
+  --vault-password-file .vault-pass
 ```
 
 After this completes, your closed-network registry contains every
@@ -194,26 +240,29 @@ It covers the transfer.
 
 ## Requirements
 
-Both hosts (any one of the supported Linux platforms):
+The Ansible toolchain (ansible-core, collections, Docker SDK, `helm`) now
+lives **inside the EE**, so the hosts themselves need very little:
 
-- Ubuntu 24.04 — verified end-to-end (the original baseline)
-- Rocky Linux 9.x — supported by `setup.sh`; playbook parse is exercised
-  in CI on a `rockylinux/rockylinux:9` container. A full fresh-VM
-  end-to-end run is the pending validation step (see the test plan in
-  the project notes).
-- RHEL 9.x — same support level as Rocky 9.x; CI parse-checked on a
-  `redhat/ubi9` container, fresh-VM end-to-end run pending.
+**Build host (internet-connected, builds the EE once):**
 
-`setup.sh` auto-detects the OS family from `/etc/os-release` and branches
-between the Debian/Ubuntu path (Ansible PPA + `apt-get`) and the
-Rocky/RHEL path (`ansible-core` from `dnf`/AppStream, with an EPEL
-`ansible` fallback). Other distributions may work but are not exercised.
+- Python 3 + `pipx install ansible-builder` and `pipx install ansible-navigator`
+  (pipx avoids the PEP 668 "externally-managed-environment" error on Ubuntu
+  24.04 / Debian 12; a dedicated venv works too)
+- A container runtime: Docker (default) or Podman
 
-- Docker 24+ with the containerd snapshotter disabled
-  (see [`push/ARCHITECTURE.md`](push/ARCHITECTURE.md) for the
-  `daemon.json` configuration)
-- Helm 3.8+ (required for OCI chart push)
-- Ansible-core 2.17+ with `community.docker` 5.2+ and `kubernetes.core` 2.4+
+**Both run hosts (where the stages execute):**
+
+- A container runtime to run the EE: Docker (default) or Podman
+- `ansible-navigator` (`pipx install ansible-navigator`)
+- Docker Engine 24+ with the containerd snapshotter disabled — the EE drives
+  this host daemon over the mounted socket (see
+  [`push/ARCHITECTURE.md`](push/ARCHITECTURE.md) for the `daemon.json`
+  configuration)
+
+The EE's own base OS is UBI 9 minimal (independent of the host OS). The hosts
+themselves can be Ubuntu 24.04 (verified baseline) or Rocky/RHEL 9.x — the EE
+makes the host OS largely irrelevant to the Ansible toolchain. Helm 3.13+ and
+ansible-core 2.17+ are baked into the EE; nothing to install on the host.
 
 Internet-side workstation additionally needs:
 
@@ -237,13 +286,23 @@ Closed-network host additionally needs:
 ├── SECURITY.md
 ├── .github/
 │   └── workflows/             ← CI (lint + release on tag)
+├── ee/                        ← Execution Environment definition
+│   ├── README.md              ← build + offline-transfer guide
+│   ├── execution-environment.yml
+│   ├── requirements.yml       ← collections (single source of truth)
+│   ├── requirements.txt       ← Python deps
+│   ├── bindep.txt             ← system deps
+│   └── build-ee.sh
 ├── pull/                      ← internet-side project
 │   ├── README.md              ← operator quick-start (this side)
 │   ├── ARCHITECTURE.md        ← engineering reference (this side)
+│   ├── ansible-navigator.yml  ← runs the stage inside the EE
 │   └── open-pull/             ← playbooks and tasks
 └── push/                      ← closed-network project
     ├── README.md
     ├── ARCHITECTURE.md
+    ├── ansible-navigator.yml  ← runs the stage inside the EE
+    ├── host-prep.sh           ← one-time HOST Docker-daemon prep
     └── ccn-push/
 ```
 

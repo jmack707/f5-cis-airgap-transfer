@@ -1,0 +1,97 @@
+---
+# =============================================================================
+# ee/execution-environment.yml
+#
+# ansible-builder v3 definition for the f5-airgap Execution Environment (EE).
+#
+# WHAT THIS IS
+#   A single container image that carries everything BOTH stages of the
+#   pipeline need to run:
+#     - ansible-core (>= 2.17) on a modern Python (3.12)
+#     - the collections the playbooks call (community.docker, ansible.utils)
+#       plus f5networks.f5_modules for the operator's BIG-IP automation
+#     - the Docker SDK for Python (community.docker's module dependency)
+#     - the `docker` CLI (client only) and `helm` CLI (>= 3.13 for OCI
+#       --plain-http / --ca-file support)
+#     - tar / gzip / openssl / sha256sum (coreutils) for bundling and
+#       integrity checks
+#
+#   The EE replaces the old per-host venv + setup.sh + ansible-galaxy flow.
+#   Build it ONCE (see ee/README.md), then run the playbooks through it with
+#   ansible-navigator (see pull/ansible-navigator.yml, push/ansible-navigator.yml).
+#
+# WHY A MINIMAL UBI 9 BASE
+#   The project targets Ubuntu and RHEL/Rocky 9 hosts. The EE's own base OS is
+#   independent of the host OS — it runs in a container — so we use the
+#   smallest RHEL-family base that still runs ansible cleanly:
+#   ubi9/ubi-minimal. It ships `microdnf` (not full dnf) and is ~3-4x smaller
+#   than the Rocky/CentOS base, which matters because this image is physically
+#   carried across the air gap (docker save | gzip).
+#
+#   UBI 9 is glibc-based, so the manylinux wheels ansible-core needs
+#   (cryptography, PyYAML, …) install without a compiler — that lets us keep
+#   the image lean (no gcc / -devel). UBI 9 also packages python3.12, which
+#   clears ansible-core's Python 3.10+ floor (the system python is 3.9).
+#
+# THE DOCKER CLIENT, NOT A DOCKER DAEMON
+#   The EE contains only the docker *client*, installed from Docker's official
+#   static binary tarball (no package repo needed on a minimal base). At run
+#   time the host's Docker socket is bind-mounted in (see the ansible-navigator
+#   configs), so every `docker` invocation and every community.docker module
+#   talks to the HOST daemon. The EE never runs its own dockerd.
+# =============================================================================
+
+version: 3
+
+images:
+  base_image:
+    name: registry.access.redhat.com/ubi9/ubi-minimal:latest
+
+# ubi-minimal uses microdnf — tell ansible-builder to drive that, not dnf.
+options:
+  package_manager_path: /usr/bin/microdnf
+
+dependencies:
+  # Use Python 3.12 for ansible-core and all module execution. package_system
+  # ensures the interpreter is installed during the build; python_path makes
+  # ansible-builder install ansible-core / runner / collections against it.
+  python_interpreter:
+    package_system: python3.12
+    python_path: /usr/bin/python3.12
+
+  ansible_core:
+    package_pip: ansible-core>=2.17
+
+  ansible_runner:
+    package_pip: ansible-runner
+
+  galaxy: requirements.yml
+  python: requirements.txt
+  system: bindep.txt
+
+additional_build_steps:
+  append_final:
+    # --- docker CLI (client only), from the official static tarball ---------
+    # A minimal base has no dnf config-manager, so we skip the docker-ce repo
+    # entirely and lift just the `docker` client binary out of Docker's static
+    # release. Bump DOCKER_VERSION to take a newer client.
+    - >-
+      RUN DOCKER_VERSION=27.3.1 &&
+      curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" -o /tmp/docker.tgz &&
+      tar -xzf /tmp/docker.tgz -C /tmp &&
+      install -m 0755 /tmp/docker/docker /usr/local/bin/docker &&
+      rm -rf /tmp/docker.tgz /tmp/docker
+
+    # --- helm CLI -----------------------------------------------------------
+    # 3.13+ is required for `helm push --plain-http` (HTTP registries) and
+    # `helm push --ca-file` (private-CA HTTPS registries) used by the push
+    # stage. Bump HELM_VERSION here to take a newer helm.
+    - >-
+      RUN HELM_VERSION=v3.16.3 &&
+      curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" -o /tmp/helm.tgz &&
+      tar -xzf /tmp/helm.tgz -C /tmp &&
+      install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm &&
+      rm -rf /tmp/helm.tgz /tmp/linux-amd64
+
+    # --- prove the CLIs are present and runnable in the final image ---------
+    - RUN docker --version && helm version --short

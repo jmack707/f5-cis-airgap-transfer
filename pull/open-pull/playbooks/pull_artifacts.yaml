@@ -32,8 +32,9 @@
 #                              skipped silently
 #
 # DESIGN NOTES
-#   gather_facts: true is required because preflight uses
-#   ansible_facts['mounts'] for the disk space check.
+#   gather_facts: true is required because the bundle stage stamps the manifest
+#   with ansible_facts['date_time']. (The disk-space check uses `df`, not the
+#   mounts fact, so it works the same inside the EE.)
 #
 #   Each registry has its own task file because the auth mechanics differ
 #   meaningfully (Docker Hub: user+password; Quay: anonymous; F5 NGINX:
@@ -49,6 +50,23 @@
     - ../../vault.yaml
 
   tasks:
+    - name: Ensure output directories exist (covers tag-scoped runs in the EE)
+      ansible.builtin.file:
+        path:  "{{ item }}"
+        state: directory
+        mode:  "0755"
+      loop:
+        - "{{ artifact_staging_dir }}"
+        - "{{ image_tar_dir }}"
+        - "{{ helm_chart_dir }}"
+      tags: [always]
+      # Each ansible-navigator run is a FRESH EE container, so directories made
+      # by a previous run don't carry over — only bind-mounted host paths do.
+      # preflight creates these too, but tag-scoped runs (--tags pull_quay,
+      # --tags bundle, …) skip preflight, so the save/pull tasks would hit
+      # "No such file or directory". The `always` tag guarantees the dirs for
+      # every invocation regardless of --tags. Idempotent.
+
     - name: Preflight checks
       ansible.builtin.include_tasks: ../tasks/preflight.yaml
       tags: [preflight]

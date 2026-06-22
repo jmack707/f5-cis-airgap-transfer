@@ -6,6 +6,7 @@
 # Secrets — never commit the real file
 # -------------------------------------
 vault.yaml
+.vault-pass
 
 # -----------------------------------------------
 # Artifact staging — can reach 15+ GB in size

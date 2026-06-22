@@ -282,7 +282,7 @@ computed inline by the task files. This is the simplification.
 | `docker pull` | Layer-level idempotent; cache hits report "ok" |
 | `docker_image archive_path:` | Always rewrites the .tar (reports "changed") |
 | `docker logout` | Removes credential or no-ops |
-| `helm repo add force_update:` | Updates URL if changed, otherwise no-op |
+| `helm repo add --force-update` | Overwrites the repo URL; re-adding is a no-op |
 | `helm pull` | Always rewrites the .tgz |
 | Per-file SHA-256 | Recomputes every run; pure function of input |
 | Manifest write | Rewrites every run |
@@ -296,7 +296,7 @@ The pipeline is **safe to re-run** at any time.
 
 | Failure | Surfaces in | Recovery |
 |---------|-------------|----------|
-| CLI tool missing | preflight | Install (use setup.sh) |
+| CLI tool missing (docker/helm/tar/sha256sum) | preflight | Rebuild the EE — these ship inside it (`ee/`) |
 | Insufficient disk space | preflight | Free space or lower `min_free_disk_gb` |
 | Docker Hub 401 | pull_dockerhub login | Fix `vault_dockerhub_*` |
 | Docker Hub 429 | pull_dockerhub pull | Wait and retry |
@@ -316,17 +316,20 @@ The pipeline is **safe to re-run** at any time.
 ### Dry-run
 
 ```bash
-ansible-playbook open-pull/playbooks/pull_artifacts.yaml --ask-vault-pass --check
+ansible-navigator run open-pull/playbooks/pull_artifacts.yaml \
+  --vault-password-file .vault-pass --check
 ```
 
 ### Targeted runs
 
 ```bash
 # Just preflight
-ansible-playbook open-pull/playbooks/pull_artifacts.yaml --ask-vault-pass --tags preflight
+ansible-navigator run open-pull/playbooks/pull_artifacts.yaml \
+  --vault-password-file .vault-pass --tags preflight
 
 # Re-bundle existing staged files (skip pulls)
-ansible-playbook open-pull/playbooks/pull_artifacts.yaml --ask-vault-pass --tags bundle
+ansible-navigator run open-pull/playbooks/pull_artifacts.yaml \
+  --vault-password-file .vault-pass --tags bundle
 ```
 
 ### Verifying a bundle

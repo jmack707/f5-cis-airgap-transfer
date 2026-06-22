@@ -1,0 +1,43 @@
+---
+# =============================================================================
+# ee/requirements.yml — Galaxy collections baked into the EE
+#
+# This is the SINGLE source of truth for the collection set (the old per-side
+# pull/collections/requirements.yml and push/collections/requirements.yml are
+# gone — both stages run inside the same EE).
+#
+# ansible-builder installs these into the image at build time, under
+# /usr/share/ansible/collections, which is on the default collection search
+# path inside the EE. Nothing is installed on the host.
+#
+# Versions are pinned to floor values known to work; higher SemVer-compatible
+# versions are accepted.
+# =============================================================================
+
+collections:
+  # --- used by the transfer playbooks today --------------------------------
+  - name: community.docker
+    version: ">=3.10.0"     # docker_login, docker_image (pull/save), etc.
+
+  # NOTE: kubernetes.core is intentionally NOT included. Its bindep declares
+  # `openshift-clients` (the oc/kubectl RPM), which isn't in the UBI 9 repos and
+  # breaks the minimal-base build. The only thing the pull stage needed from it
+  # was helm_repository, which is just `helm repo add` — the helm CLI (baked in)
+  # does that directly in pull_charts.yaml. If a future stage needs the k8s/oc
+  # modules, re-add kubernetes.core AND provision kubectl/oc in the EE build.
+
+  # --- F5 BIG-IP automation (CIS onboarding, AS3/DO) --------------------------
+  # Not called by the transfer playbooks, but baked in so the operator's
+  # BIG-IP-side automation runs through the SAME EE. f5_modules talks to BIG-IP
+  # over REST via an httpapi connection, which is why ansible.netcommon is a
+  # hard dependency (pinned explicitly for offline/air-gap reproducibility —
+  # ansible-galaxy would otherwise resolve it implicitly).
+  - name: f5networks.f5_modules
+    version: ">=1.27.0"
+
+  - name: ansible.netcommon
+    version: ">=2.0.0"      # httpapi connection plugin used by f5_modules
+
+  # --- shared helpers (data/network filters); retained for future stages -----
+  - name: ansible.utils
+    version: ">=2.10.0"

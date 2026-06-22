@@ -1,11 +1,14 @@
 # =============================================================================
 # .github/workflows/lint.yml
 #
-# Runs on every push to main and every pull request. Three jobs:
-#   1. yaml-lint        — generic YAML syntax + style
-#   2. syntax-check     — ansible-playbook --syntax-check on every playbook
-#   3. release-dry-run  — verifies the release workflow would succeed
-#                          (without actually creating a release)
+# Runs on every push to main and every pull request. Jobs:
+#   1. yaml-lint          — generic YAML syntax + style (ee/ pull/ push/)
+#   2. syntax-check       — ansible-playbook --syntax-check on every playbook,
+#                            collections installed from ee/requirements.yml
+#   3. ee-validate        — ansible-builder validates the EE definition
+#   4. shellcheck         — static analysis of the shell scripts
+#   5. rhel-syntax-check  — playbook parse on Rocky 9 / UBI 9 filesystems
+#   6. release-dry-run    — verifies the release workflow would succeed
 # =============================================================================
 
 name: lint
@@ -35,10 +38,11 @@ jobs:
           # Use 'relaxed' profile — strict yamllint is too pedantic for
           # heavily-commented task files. We catch real syntax errors;
           # we don't bikeshed line length or trailing whitespace.
-          yamllint -d relaxed pull/ push/
+          yamllint -d relaxed ee/ pull/ push/
 
   # ---------------------------------------------------------------------------
-  # Syntax check — Ansible's own parser validates every playbook
+  # Syntax check — Ansible's own parser validates every playbook. Collections
+  # now come from the single source of truth, ee/requirements.yml.
   # ---------------------------------------------------------------------------
   syntax-check:
     name: syntax-check
@@ -49,11 +53,8 @@ jobs:
       - name: Install ansible-core
         run: pip install 'ansible-core>=2.17'
 
-      - name: Install collections (pull side)
-        run: ansible-galaxy collection install -r pull/collections/requirements.yml
-
-      - name: Install collections (push side)
-        run: ansible-galaxy collection install -r push/collections/requirements.yml
+      - name: Install collections (from the EE requirements)
+        run: ansible-galaxy collection install -r ee/requirements.yml
 
       - name: Stub vault.yaml files (required for syntax check to resolve vars)
         run: |
@@ -76,10 +77,36 @@ jobs:
           ansible-playbook ccn-push/playbooks/push_artifacts_remove.yaml --syntax-check
 
   # ---------------------------------------------------------------------------
-  # ShellCheck — static analysis of the setup.sh scripts. These now branch on
-  # OS family (Debian/Ubuntu vs Rocky/RHEL), so a shell linter is worth its
-  # weight: it catches quoting, unset-variable, and branch mistakes that
-  # `bash -n` does not. shellcheck is preinstalled on GitHub ubuntu runners.
+  # EE definition validation — `ansible-builder create` parses the
+  # execution-environment.yml, resolves the dependency files, and generates a
+  # build context + Containerfile WITHOUT running a full container build (fast,
+  # no runtime needed). Catches schema errors and missing dependency files.
+  # ---------------------------------------------------------------------------
+  ee-validate:
+    name: ee-validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ansible-builder
+        run: pip install ansible-builder
+
+      - name: Validate the EE definition (create build context)
+        run: |
+          ansible-builder create \
+            --file ee/execution-environment.yml \
+            --context /tmp/ee-context \
+            --verbosity 2
+          # ansible-builder names the file Containerfile or Dockerfile depending
+          # on the detected runtime — accept either.
+          cf="$(ls /tmp/ee-context/Containerfile /tmp/ee-context/Dockerfile 2>/dev/null | head -1)"
+          test -n "$cf" || { echo "No Containerfile/Dockerfile generated"; exit 1; }
+          echo "Generated $cf:"; head -40 "$cf"
+
+  # ---------------------------------------------------------------------------
+  # ShellCheck — static analysis of the shell scripts. The EE builder and the
+  # host-prep script branch on arguments and OS state, so a shell linter earns
+  # its keep. shellcheck is preinstalled on GitHub ubuntu runners.
   # ---------------------------------------------------------------------------
   shellcheck:
     name: shellcheck
@@ -87,25 +114,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: ShellCheck setup scripts
+      - name: ShellCheck the shell scripts
         run: |
           shellcheck --version
-          # SC1091: we intentionally `. /etc/os-release` (a runtime file that
-          # is not present at lint time); the source-not-followed warning is
-          # already suppressed inline in the scripts, but we exclude it here
-          # too so a missing file at lint time is never a hard failure.
-          shellcheck -e SC1091 pull/setup.sh push/setup.sh
+          # SC1091: host-prep.sh sources /etc/os-release-style runtime files
+          # only on the host; the source-not-followed warning is irrelevant at
+          # lint time.
+          shellcheck -e SC1091 ee/build-ee.sh push/host-prep.sh
 
   # ---------------------------------------------------------------------------
   # RHEL-family parse check — proves the playbooks parse on a Rocky/RHEL
-  # filesystem, and that the OS-detection matcher in setup.sh resolves these
-  # containers to the "rhel" family. The GitHub runner OS is irrelevant; the
-  # job body runs INSIDE the container, so ansible sees a RHEL-family root.
+  # filesystem. The GitHub runner OS is irrelevant; the job body runs INSIDE
+  # the container, so ansible sees a RHEL-family root.
   #
-  # NOTE: ansible-core is installed via pip here on purpose. This job validates
-  # *playbook parse on a RHEL-family fs*, not the dnf/AppStream install path —
-  # ubi9 cannot dnf-install ansible-core without a subscription, and CI must
-  # not depend on one. The dnf path is validated by the fresh-VM test plan.
+  # NOTE: ansible-core is installed via pip into a python3.12 venv here on
+  # purpose — EL9 base images ship Python 3.9, below ansible-core's 3.10 floor,
+  # exactly as on a real EL9 host. The EE build itself (which also handles this)
+  # is validated by the ee-validate job and by a real build via ee/build-ee.sh.
   # ---------------------------------------------------------------------------
   rhel-syntax-check:
     name: rhel-syntax-check
@@ -121,56 +146,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Show detected OS and assert it classifies as rhel
-        run: |
-          # shellcheck disable=SC1091
-          . /etc/os-release
-          echo "Container OS: ${PRETTY_NAME:-unknown} (ID=${ID:-} ID_LIKE=${ID_LIKE:-})"
-          # Mirror the EXACT case expression used by detect_os in setup.sh.
-          case " ${ID:-} ${ID_LIKE:-} " in
-            *" debian "*|*" ubuntu "*) family="debian" ;;
-            *" rhel "*|*" fedora "*|*" centos "*|*" rocky "*|*" almalinux "*) family="rhel" ;;
-            *) family="unknown" ;;
-          esac
-          echo "detect_os would classify this as: ${family}"
-          test "${family}" = "rhel" || { echo "Expected rhel family, got ${family}"; exit 1; }
-
       - name: Install Python 3.12 and build an ansible venv
-        # EL9 base images ship Python 3.9 as the system python3, but
-        # ansible-core >= 2.16 requires Python >= 3.10. So we install the
-        # python3.12 AppStream package and build the venv FROM it — the same
-        # path setup.sh prescribes for RHEL/Rocky operators.
-        #
-        # We deliberately do NOT write /opt/ansible-venv/bin to $GITHUB_PATH:
-        # in a container job that rebuilds PATH from the host and drops the
-        # image's /bin:/usr/bin, breaking the shell of every later step
-        # ("exec: sh: not found"). Each step that needs ansible prepends the
-        # venv to PATH itself, which is local to that step's already-started
-        # shell and safe.
         run: |
           dnf install -y python3.12 python3.12-pip tar gzip git >/dev/null
           python3.12 -m venv /opt/ansible-venv
-
-      - name: Install ansible-core (>= 2.17) into the venv
-        # NOTE: pip-installed on purpose. This job validates *playbook parse on
-        # a RHEL-family fs*, not the dnf/AppStream install path — AppStream's
-        # ansible-core is 2.14 on Python 3.9 and cannot meet the 2.17 floor,
-        # exactly as on a real EL9 host. The venv built above sidesteps that.
-        run: |
-          /opt/ansible-venv/bin/pip install --upgrade pip
+          /opt/ansible-venv/bin/pip install --upgrade pip >/dev/null
           /opt/ansible-venv/bin/pip install 'ansible-core>=2.17'
           /opt/ansible-venv/bin/ansible --version | head -1
 
-      - name: Static-check setup.sh syntax on this platform
-        run: |
-          bash -n pull/setup.sh
-          bash -n push/setup.sh
-
-      - name: Install collections (both sides)
+      - name: Install collections (from the EE requirements)
         run: |
           export PATH="/opt/ansible-venv/bin:$PATH"
-          ansible-galaxy collection install -r pull/collections/requirements.yml
-          ansible-galaxy collection install -r push/collections/requirements.yml
+          ansible-galaxy collection install -r ee/requirements.yml
+
+      - name: Static-check shell scripts on this platform
+        run: |
+          bash -n ee/build-ee.sh
+          bash -n push/host-prep.sh
 
       - name: Stub vault.yaml files (syntax check loads vars_files)
         run: |
@@ -192,7 +184,9 @@ jobs:
           ansible-playbook ccn-push/playbooks/push_artifacts_remove.yaml --syntax-check
 
   # ---------------------------------------------------------------------------
-  # Release dry-run — verifies the release workflow's zip-build step succeeds
+  # Release dry-run — verifies the release workflow's zip-build step succeeds.
+  # Each side's zip bundles a copy of ee/ so an operator who downloads one zip
+  # can build the EE from it.
   # ---------------------------------------------------------------------------
   release-dry-run:
     name: release-dry-run
@@ -205,6 +199,7 @@ jobs:
           rm -rf /tmp/staging dist
           mkdir -p /tmp/staging/f5-airgap-pull dist
           cp -r pull/. /tmp/staging/f5-airgap-pull/
+          cp -r ee /tmp/staging/f5-airgap-pull/ee
           rm -f /tmp/staging/f5-airgap-pull/vault.yaml
           (cd /tmp/staging && zip -rq "$GITHUB_WORKSPACE/dist/f5-airgap-pull-dryrun.zip" f5-airgap-pull)
           ls -lh dist/
@@ -214,6 +209,7 @@ jobs:
           rm -rf /tmp/staging
           mkdir -p /tmp/staging/f5-airgap-push
           cp -r push/. /tmp/staging/f5-airgap-push/
+          cp -r ee /tmp/staging/f5-airgap-push/ee
           rm -f /tmp/staging/f5-airgap-push/vault.yaml
           (cd /tmp/staging && zip -rq "$GITHUB_WORKSPACE/dist/f5-airgap-push-dryrun.zip" f5-airgap-push)
           ls -lh dist/

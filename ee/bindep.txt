@@ -1,0 +1,20 @@
+# =============================================================================
+# ee/bindep.txt — system (OS) packages baked into the EE
+#
+# ansible-builder feeds this to bindep and installs the matching packages with
+# the base image's package manager (microdnf, on the ubi9-minimal base). The
+# "[platform:rpm]" profile scopes each line to RPM-based distributions.
+#
+# Kept deliberately lean for the minimal base: ansible-core's Python deps
+# install from manylinux wheels (glibc), so no compiler / -devel headers are
+# needed. tar + gzip extract the docker/helm static tarballs in the build;
+# openssl backs the push stage's CA validation; sha256sum ships in coreutils.
+# =============================================================================
+
+git [platform:rpm]
+tar [platform:rpm]
+gzip [platform:rpm]
+openssl [platform:rpm]
+
+# pip for the EE's Python 3.12, so ansible-builder can install the pip deps.
+python3.12-pip [platform:rpm]

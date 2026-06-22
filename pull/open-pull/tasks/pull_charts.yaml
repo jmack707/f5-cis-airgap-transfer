@@ -13,17 +13,20 @@
 # =============================================================================
 
 - name: Add Helm repositories
-  kubernetes.core.helm_repository:
-    name:         "{{ item.name }}"
-    repo_url:     "{{ item.url }}"
-    force_update: true
+  ansible.builtin.command:
+    cmd: "helm repo add {{ item.name }} {{ item.url }} --force-update"
   loop: "{{ helm_repos }}"
   loop_control:
     label: "{{ item.name }}"
+  changed_when: true
   tags: [pull, pull_charts]
-  # force_update: true is non-negotiable. Without it, stale URLs for an
-  # existing repo name are kept silently and the pull tries against the
-  # wrong server.
+  # Done via the helm CLI (baked into the EE) rather than
+  # kubernetes.core.helm_repository, so the EE doesn't have to pull in
+  # kubernetes.core's openshift-clients bindep (absent on the minimal UBI base).
+  # --force-update is non-negotiable: without it, a stale URL for an existing
+  # repo name is kept silently and the pull hits the wrong server. It also makes
+  # the task idempotent (re-adding an identical repo is a no-op to helm), which
+  # is why we don't try to detect "already added".
 
 - name: Update Helm repository cache
   ansible.builtin.command:

@@ -27,9 +27,9 @@ f5-airgap-push/
 ├── README.md                        ← you are here
 ├── .gitignore
 ├── ansible.cfg
-├── setup.sh                         ← verifies tooling (no internet install)
+├── ansible-navigator.yml            ← runs this stage inside the EE
+├── host-prep.sh                     ← one-time HOST Docker-daemon prep
 ├── vault.yaml.example
-├── collections/requirements.yml
 ├── inventory/hosts.yaml
 ├── group_vars/
 │   └── all/main.yaml                ← paths + push_repo mappings (visible)
@@ -40,8 +40,6 @@ f5-airgap-push/
     │   └── push_artifacts_remove.yaml
     └── tasks/
         ├── preflight.yaml
-        ├── configure_insecure_registry.yaml
-        ├── trust_ca.yaml
         ├── extract_bundle.yaml
         ├── verify_manifest.yaml
         ├── build_push_plan.yaml
@@ -51,20 +49,40 @@ f5-airgap-push/
         └── logout.yaml
 ```
 
+The Ansible toolchain (ansible-core, collections, Docker SDK, `helm`) lives in
+the **Execution Environment** defined at the repo root in
+[`../ee/`](../ee/README.md). The host Docker-daemon configuration that used to
+be `configure_insecure_registry.yaml` and `trust_ca.yaml` now lives in
+[`host-prep.sh`](host-prep.sh) — it can't run inside a container, so it runs on
+the host before the EE push.
+
 ## Quick Start
 
-### 1. Verify the host
+### 1. Load the EE on this host
+
+The closed-network host can't build or download the EE, so it's built on the
+internet side and carried across the gap as a saved image (see
+[`../ee/README.md`](../ee/README.md)):
 
 ```bash
-bash setup.sh
+# Build host (internet side):
+docker save f5-airgap-ee:latest | gzip > f5-airgap-ee.tar.gz
+sha256sum f5-airgap-ee.tar.gz > f5-airgap-ee.tar.gz.sha256
+
+# …transfer both files across the gap, then on THIS host:
+sha256sum -c f5-airgap-ee.tar.gz.sha256
+gunzip -c f5-airgap-ee.tar.gz | docker load
+
+# Install the runner from a local mirror / offline wheels. Prefer pipx so it
+# gets its own venv (Ubuntu 24.04 / Debian 12 block system-wide pip — PEP 668):
+pipx install ansible-navigator
+# (offline: pipx install --pip-args "--no-index --find-links /path/to/wheels" ansible-navigator)
 ```
 
-This checks for ansible-core, Docker, Helm 3.8+, and the required Ansible
-collections. It does not install anything — closed-network hosts can't
-reach the internet, so installations must be done manually from local
-sources. The script detects the OS family from `/etc/os-release` and, when
-a check fails, prints an install hint phrased for that platform (`apt`/.deb
-on Ubuntu/Debian, `dnf`/.rpm on Rocky/RHEL).
+The host itself needs only a container runtime, `ansible-navigator`, a running
+Docker daemon, and `helm` is **not** required on the host — it lives in the EE.
+`pull-policy: missing` in `ansible-navigator.yml` means navigator uses the
+locally loaded image and never reaches for a registry.
 
 ### 2. Configure paths and registry
 
@@ -86,6 +104,9 @@ ccn_min_free_disk_gb:     30
 cp vault.yaml.example vault.yaml
 # Edit vault.yaml — set the registry host, port, TLS toggle, auth toggle
 ansible-vault encrypt vault.yaml
+
+# Vault password file, read by ansible-navigator (gitignored):
+printf '%s' 'your-vault-password' > .vault-pass && chmod 600 .vault-pass
 ```
 
 The defaults in `vault.yaml.example` target a lab Docker Registry v2 at
@@ -102,24 +123,44 @@ default value:
 /srv/airgap-incoming/airgap-bundle.tar.gz.sha256
 ```
 
-### 4. Run
+### 4. Prepare the host Docker daemon (one-time, outside the EE)
+
+The Docker daemon reconfiguration can't run inside a container, so it's a
+host-level script run once with `sudo`:
 
 ```bash
-ansible-playbook ccn-push/playbooks/push_artifacts.yaml --ask-vault-pass
+# HTTP (insecure) registry — adds the insecure-registries entry + restarts dockerd:
+sudo ./host-prep.sh --host registry.example.com --port 5000 --insecure
+
+# OR HTTPS registry with a private CA — trusts the CA for the daemon:
+sudo ./host-prep.sh --host registry.example.com --port 443 \
+  --ca-path /etc/ssl/certs/internal-ca.crt
 ```
 
-The playbook handles the full sequence:
+For the **HTTPS** profile, also uncomment the CA `volume-mount` in
+`ansible-navigator.yml` so `helm` inside the EE can verify TLS (`helm` talks to
+the registry directly, not via the Docker daemon).
+
+### 5. Run
+
+```bash
+ansible-navigator run ccn-push/playbooks/push_artifacts.yaml \
+  --vault-password-file .vault-pass
+```
+
+`ansible-navigator.yml` runs the playbook inside `f5-airgap-ee:latest` with the
+host Docker socket and the `/srv/airgap-*` directories mounted. The playbook
+handles the full sequence:
 
 1. Preflight — bundle, tools, Helm version, disk, network reachability
-2. Configure Docker for the registry profile (HTTPS+CA trust, or HTTP+insecure entry)
-3. Extract the bundle
-4. Verify SHA-256 of every image and chart against the manifest
-5. Authenticate to the registry (if required)
-6. Load, re-tag, and push every image
-7. Push every Helm chart as an OCI artifact
-8. Log out cleanly
+2. Extract the bundle
+3. Verify SHA-256 of every image and chart against the manifest
+4. Authenticate to the registry (if required)
+5. Load, re-tag, and push every image
+6. Push every Helm chart as an OCI artifact
+7. Log out cleanly
 
-### 5. Verify
+### 6. Verify
 
 ```bash
 # HTTP / anonymous:
@@ -130,16 +171,16 @@ curl http://registry.example.com:5000/v2/f5/k8s-bigip-ctlr/tags/list
 helm show chart oci://registry.example.com:5000/f5/charts/f5-bigip-ctlr --version 0.0.35
 ```
 
-### 6. Clean up (optional)
+### 7. Clean up (optional)
 
 ```bash
-# Removes the staging area:
-ansible-playbook ccn-push/playbooks/push_artifacts_remove.yaml --ask-vault-pass
+# Removes the staging area (inside the EE):
+ansible-navigator run ccn-push/playbooks/push_artifacts_remove.yaml \
+  --vault-password-file .vault-pass
 
-# Also remove insecure-registries entry (HTTP profile, restarts Docker):
-ansible-playbook ccn-push/playbooks/push_artifacts_remove.yaml \
-  --extra-vars "confirm_removal=true remove_insecure_entry=true" \
-  --ask-vault-pass
+# Undo the host Docker-daemon changes (on the host, outside the EE):
+sudo ./host-prep.sh --host registry.example.com --port 5000 --insecure --remove
+# HTTPS CA: sudo rm -rf /etc/docker/certs.d/registry.example.com
 ```
 
 ## Where Each Value Lives
@@ -192,13 +233,14 @@ Any variable can be overridden at run time with `--extra-vars`:
 
 ```bash
 # Override the bundle path for a single run without editing files:
-ansible-playbook ccn-push/playbooks/push_artifacts.yaml \
-  --ask-vault-pass \
+ansible-navigator run ccn-push/playbooks/push_artifacts.yaml \
+  --vault-password-file .vault-pass \
   --extra-vars "ccn_bundle_incoming_path=/home/labuser/airgap-bundle.tar.gz"
 ```
 
 Useful for testing a different bundle location without re-encrypting vault
-or editing group_vars.
+or editing group_vars. A bundle path **outside `/srv`** must also be added as
+a `volume-mount` in `ansible-navigator.yml`.
 
 ## Configuration Profiles
 
@@ -233,13 +275,16 @@ any push runs.
 
 ## Prerequisites
 
+Almost everything now ships **inside the EE**, carried across the gap as a
+saved image. The closed-network host itself needs very little:
+
 | Requirement | Minimum | How to provide on a closed-network host |
 |-------------|---------|------------------------------------------|
-| ansible-core | 2.17 | Local apt/dnf mirror, offline pip wheel, or pre-built tarball |
-| community.docker | 3.10.0 | Offline collection tarball (`ansible-galaxy collection download`) |
-| kubernetes.core | 2.4.0 | Same as above |
-| Docker Engine | 18.09+ | Local package repository |
-| Helm | **3.8.0+** | Static binary, copied via the same physical transfer as the bundle |
+| The EE image | `f5-airgap-ee:latest` | `docker load` from the saved image (see [`../ee/README.md`](../ee/README.md)) |
+| `ansible-navigator` | current | Offline pip wheel / local mirror |
+| Container runtime | Docker 24+ / Podman | Local package repository |
+| Docker Engine | 24+ | Local package repository (the EE drives it via the socket) |
+| ansible-core, collections, Docker SDK, Helm 3.13+ | — | **baked into the EE** — nothing to install on the host |
 
 ---
 
@@ -249,19 +294,19 @@ The playbook is tagged so you can run subsets without running everything:
 
 ```bash
 # Just preflight — fast environment validation
-ansible-playbook ccn-push/playbooks/push_artifacts.yaml --ask-vault-pass --tags preflight
+ansible-navigator run ccn-push/playbooks/push_artifacts.yaml --vault-password-file .vault-pass --tags preflight
 
 # Bundle integrity check only (no push)
-ansible-playbook ccn-push/playbooks/push_artifacts.yaml --ask-vault-pass --tags extract,verify
+ansible-navigator run ccn-push/playbooks/push_artifacts.yaml --vault-password-file .vault-pass --tags extract,verify
 
 # Skip preflight/extract/verify; assume staging is already populated
-ansible-playbook ccn-push/playbooks/push_artifacts.yaml --ask-vault-pass --tags push
+ansible-navigator run ccn-push/playbooks/push_artifacts.yaml --vault-password-file .vault-pass --tags push
 
 # Images only (skip charts)
-ansible-playbook ccn-push/playbooks/push_artifacts.yaml --ask-vault-pass --tags push_images
+ansible-navigator run ccn-push/playbooks/push_artifacts.yaml --vault-password-file .vault-pass --tags push_images
 
 # Charts only (skip images)
-ansible-playbook ccn-push/playbooks/push_artifacts.yaml --ask-vault-pass --tags push_charts
+ansible-navigator run ccn-push/playbooks/push_artifacts.yaml --vault-password-file .vault-pass --tags push_charts
 ```
 
 ---
@@ -269,12 +314,14 @@ ansible-playbook ccn-push/playbooks/push_artifacts.yaml --ask-vault-pass --tags 
 ## Dry-Run (Check Mode)
 
 ```bash
-ansible-playbook ccn-push/playbooks/push_artifacts.yaml --ask-vault-pass --check --diff
+ansible-navigator run ccn-push/playbooks/push_artifacts.yaml \
+  --vault-password-file .vault-pass --check --diff
 ```
 
 `--check` skips command modules but exercises the bulk of the playbook
-structure. `--diff` shows exactly what would change in
-`/etc/docker/daemon.json` before any actual write.
+structure. Host Docker-daemon changes are no longer part of this playbook —
+they live in `host-prep.sh` — so check mode now exercises only the
+verify/load/push flow.
 
 ---
 

@@ -73,7 +73,10 @@
 
 - name: Push Helm charts as OCI artifacts
   ansible.builtin.command:
-    cmd: "helm push {{ item.local_path }} {{ item.target_oci }}{{ ' --plain-http' if (ccn_registry_insecure | bool) else '' }}"
+    cmd: "helm push {{ item.local_path }} {{ item.target_oci }}{{ ' --plain-http' if (ccn_registry_insecure | bool) else ' --ca-file ' + ccn_registry_ca_path }}"
+    # HTTPS: pass the private CA so helm (running in the EE, talking to the
+    # registry directly) can verify TLS. The CA must be mounted into the EE.
+    # HTTP: --plain-http as before.
   loop: "{{ chart_push_plan }}"
   loop_control:
     label: "{{ item.filename }} → {{ item.target_oci }}"

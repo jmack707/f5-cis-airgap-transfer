@@ -7,18 +7,23 @@
 #   produced by the pull stage, verifies it, and publishes all images
 #   and OCI charts into the closed-network registry.
 #
-# SEQUENCE (each step is a task file under ccn-push/tasks/)
+# HOST PREP FIRST (outside the EE)
+#   The HOST Docker-daemon changes — insecure-registries + restart (HTTP), or
+#   private-CA trust under /etc/docker/certs.d (HTTPS) — cannot run cleanly
+#   inside the EE container, so they now live in push/host-prep.sh. Run that
+#   ONCE on the host with sudo before this playbook. See push/README.md.
+#
+# SEQUENCE (each step is a task file under ccn-push/tasks/, run inside the EE)
 #   1. preflight                       Read-only checks (no mutations)
-#   2. configure_insecure_registry     Edits daemon.json (HTTP profile only)
-#   3. trust_ca                        Installs private CA (HTTPS profile only)
-#   4. extract_bundle                  tar -xzf into ccn_staging_dir
-#   5. verify_manifest                 SHA-256 of every file vs manifest
-#   6. build_push_plan                 Joins manifest with push_repo maps
-#   7. block: login → push images → push charts
+#   2. extract_bundle                  tar -xzf into ccn_staging_dir
+#   3. verify_manifest                 SHA-256 of every file vs manifest
+#   4. build_push_plan                 Joins manifest with push_repo maps
+#   5. block: login → push images → push charts
 #      always: logout                  Logout fires even if block fails
 #
-# RUN
-#   ansible-playbook ccn-push/playbooks/push_artifacts.yaml --ask-vault-pass
+# RUN (through the EE)
+#   ansible-navigator run ccn-push/playbooks/push_artifacts.yaml \
+#     --vault-password-file .vault-pass
 #
 # RUN A SUBSET (using tags)
 #   --tags preflight              Just validate the environment
@@ -37,9 +42,9 @@
 #   robot token could linger in ~/.docker/config.json after a failed
 #   run — a meaningful credential-hygiene issue in a shared host.
 #
-#   gather_facts: true is required because preflight uses
-#   ansible_facts['mounts'] for the disk space check. The few-hundred-ms
-#   cost is negligible vs. having to gate the disk check separately.
+#   gather_facts: true is kept for parity and any fact-dependent reporting;
+#   the disk-space check uses `df` (not the mounts fact), so it behaves the
+#   same inside the EE as on bare metal.
 #
 #   vars_files order matters:
 #     1. group_vars/all/main.yaml — operational defaults
@@ -60,13 +65,9 @@
       ansible.builtin.include_tasks: ../tasks/preflight.yaml
       tags: [preflight]
 
-    - name: Configure Docker for insecure (HTTP) registry — skipped if HTTPS
-      ansible.builtin.include_tasks: ../tasks/configure_insecure_registry.yaml
-      tags: [configure_insecure_registry]
-
-    - name: Trust private CA in Docker — skipped if insecure
-      ansible.builtin.include_tasks: ../tasks/trust_ca.yaml
-      tags: [trust_ca]
+    # NOTE: HOST Docker-daemon config (insecure-registries / private-CA trust)
+    # is handled by push/host-prep.sh on the host BEFORE this run — it can't
+    # run from inside the EE container. See the playbook header.
 
     - name: Extract bundle
       ansible.builtin.include_tasks: ../tasks/extract_bundle.yaml

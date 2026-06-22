@@ -1,0 +1,65 @@
+---
+# =============================================================================
+# push/ansible-navigator.yml — how the push stage runs inside the EE
+#
+# ansible-navigator auto-loads this file when invoked from the push/ directory.
+#
+# RUN (after host-prep.sh — see below)
+#   cd push
+#   ansible-navigator run ccn-push/playbooks/push_artifacts.yaml \
+#     --vault-password-file .vault-pass
+#
+# IMPORTANT — RUN host-prep.sh FIRST
+#   The Docker daemon reconfiguration (insecure-registries entry + restart, or
+#   private-CA trust under /etc/docker/certs.d) is a HOST-level change that
+#   cannot run cleanly from inside a container. It now lives in push/host-prep.sh,
+#   which you run ONCE on the host with sudo before the EE push:
+#       sudo ./host-prep.sh --host registry.example.com --port 5000 --insecure
+#   See push/README.md for the HTTPS / CA variant.
+#
+# MOUNTS
+#   - The host Docker socket, so docker load/tag/push inside the EE drive the
+#     HOST daemon (which host-prep.sh already configured for the registry).
+#   - The bundle's incoming directory and the staging directory (defaults under
+#     /srv), since these live outside the project tree and navigator only
+#     mounts the project directory by default.
+#   - (HTTPS profile only) the private CA file, so `helm push --ca-file` inside
+#     the EE can validate the registry's TLS cert. helm talks to the registry
+#     directly (not via the Docker daemon), so it needs the CA itself.
+# =============================================================================
+
+ansible-navigator:
+  mode: stdout
+
+  execution-environment:
+    enabled: true
+    image: f5-airgap-ee:latest
+    container-engine: docker
+    pull:
+      policy: missing
+    container-options:
+      - "--user=root"
+    environment-variables:
+      pass:
+        - ANSIBLE_VAULT_PASSWORD_FILE
+    volume-mounts:
+      - src: "/var/run/docker.sock"
+        dest: "/var/run/docker.sock"
+        options: "z"
+      - src: "/srv/airgap-incoming"
+        dest: "/srv/airgap-incoming"
+        options: "z"
+      - src: "/srv/airgap-staging"
+        dest: "/srv/airgap-staging"
+        options: "z"
+      # HTTPS profile only — mount the private CA so helm can verify TLS.
+      # Match the path to ccn_registry_ca_path in group_vars/all/main.yaml.
+      # - src: "/etc/ssl/certs/internal-ca.crt"
+      #   dest: "/etc/ssl/certs/internal-ca.crt"
+      #   options: "ro"
+
+  playbook-artifact:
+    enable: false
+
+  logging:
+    level: warning

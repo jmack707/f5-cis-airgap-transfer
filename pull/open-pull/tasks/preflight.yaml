@@ -24,14 +24,13 @@
 #   Safe to re-run; mkdir is conditional.
 #
 # FAILURE MODES
-#   - ansible-core below 2.17            → activate your venv first; on
-#                                            RHEL 9 / Rocky 9 the system
-#                                            python3.9 caps ansible-core at
-#                                            2.15.x (see pull/README.md)
-#   - Required collection missing        → run ansible-galaxy collection
-#                                            install -r collections/requirements.yml
-#                                            (or bash setup.sh) against the
-#                                            active interpreter/venv
+#   - ansible-core below 2.17            → the EE is built wrong or you are not
+#                                            running inside it; rebuild with
+#                                            ee/build-ee.sh and run via
+#                                            ansible-navigator (see pull/README.md)
+#   - Required collection missing        → the EE is missing a collection;
+#                                            check ee/requirements.yml and
+#                                            rebuild the EE (ee/build-ee.sh)
 #   - Required CLI missing               → install before re-running
 #                                            (setup.sh covers this)
 #   - Insufficient disk space            → free space or lower threshold
@@ -48,17 +47,16 @@
       - ansible_version.full is version('2.17.0', '>=')
     fail_msg: >-
       ansible-core {{ ansible_version.full }} is below the required 2.17.0.
-      On RHEL 9 / Rocky 9 the system python3 is 3.9, which caps ansible-core
-      at 2.15.x — if you see this there, you are almost certainly running the
-      system interpreter instead of your venv. Activate it and re-run:
-        source ~/.venv/ansible/bin/activate
-      (On Ubuntu, install ansible-core >= 2.17 via the Ansible PPA or pip.)
+      Inside the f5-airgap EE this should never happen — if it does, the EE
+      was built incorrectly or you are running the playbook outside it.
+      Rebuild with ee/build-ee.sh and run via ansible-navigator (see
+      pull/README.md).
     success_msg: "ansible-core {{ ansible_version.full }} (>= 2.17.0) — OK"
   tags: [preflight]
   # FIRST gate, on purpose. ansible_version is a magic var (the controller's
   # own version), available without gather_facts, so this fails in one second
-  # if the wrong interpreter is active — before any login, pull, or mkdir.
-  # The 2.17.0 floor mirrors ANSIBLE_MIN in setup.sh; keep them in sync.
+  # if the EE was built wrong — before any login, pull, or mkdir.
+  # The 2.17.0 floor matches ee/execution-environment.yml; keep them in sync.
 
 - name: Read installed Ansible collections
   ansible.builtin.command: ansible-galaxy collection list --format json
@@ -82,40 +80,28 @@
       {{ _collections.values() | map('dict2items') | flatten
          | selectattr('key', 'equalto', 'community.docker')
          | map(attribute='value.version') | list }}
-    _k8s_versions: >-
-      {{ _collections.values() | map('dict2items') | flatten
-         | selectattr('key', 'equalto', 'kubernetes.core')
-         | map(attribute='value.version') | list }}
     # Sentinel so an ABSENT collection yields a version that fails the floor
     # cleanly, instead of `| first` throwing on an empty list (which would
     # crash msg templating before our fail_msg could render).
     _docker_ver: "{{ (_docker_versions + ['0.0.0']) | first }}"
-    _k8s_ver: "{{ (_k8s_versions + ['0.0.0']) | first }}"
   ansible.builtin.assert:
     that:
       - _docker_versions | length > 0
       - _docker_ver is version('3.10.0', '>=')
-      - _k8s_versions | length > 0
-      - _k8s_ver is version('2.4.0', '>=')
     fail_msg: >-
-      Required collections are missing or too old (need community.docker
-      >=3.10.0 and kubernetes.core >=2.4.0; found community.docker
-      {{ _docker_ver }}, kubernetes.core {{ _k8s_ver }}). On EL9 this usually
-      means the venv was built but setup.sh's collection-install step has not
-      run against THIS interpreter yet. Fix it — venv active, from the project
-      root: ansible-galaxy collection install -r collections/requirements.yml
-      (or just: bash setup.sh).
-    success_msg: >-
-      Collections OK — community.docker {{ _docker_ver }},
-      kubernetes.core {{ _k8s_ver }}
+      community.docker is missing or too old (need >=3.10.0; found
+      {{ _docker_ver }}). Inside the EE this means ee/requirements.yml is wrong
+      or the EE is stale — fix the pin and rebuild with ee/build-ee.sh.
+    success_msg: "Collections OK — community.docker {{ _docker_ver }}"
   tags: [preflight]
   # SECOND gate. Catches the "good ansible, no collections" state that
   # otherwise fails deep in pull_dockerhub.yaml with the cryptic
   # "couldn't resolve module/action 'community.docker.docker_login'".
+  # Helm repo management uses the helm CLI directly (not kubernetes.core),
+  # so only community.docker is asserted here.
 
 - name: Verify required CLI tools are installed
-  ansible.builtin.command:
-    cmd: "which {{ item }}"
+  ansible.builtin.shell: "command -v {{ item }}"
   loop:
     - docker         # docker save (image export)
     - helm           # helm pull (chart download)
@@ -125,32 +111,9 @@
   register: tool_checks
   failed_when: tool_checks.rc != 0
   tags: [preflight]
-
-- name: Identify filesystem mount for artifact staging directory
-  ansible.builtin.set_fact:
-    staging_mount: >-
-      {{ ansible_facts['mounts']
-         | selectattr('mount', 'in', artifact_staging_dir)
-         | sort(attribute='mount') | last }}
-  tags: [preflight]
-  # Walks the mount table to find the longest mount prefix containing
-  # artifact_staging_dir. If artifact_staging_dir is /mnt/usb/foo and
-  # /mnt/usb is its own mount, the disk check uses /mnt/usb's
-  # filesystem — not the root partition.
-
-- name: Assert sufficient free disk space
-  ansible.builtin.assert:
-    that:
-      - (staging_mount.size_available | int) >= (min_free_disk_gb | int * 1024 * 1024 * 1024)
-    fail_msg: >-
-      Insufficient disk space on {{ staging_mount.mount }}.
-      Available : {{ (staging_mount.size_available | int / 1073741824) | round(1) }} GB
-      Required  : {{ min_free_disk_gb }} GB
-      Free up space or lower min_free_disk_gb in group_vars/all/main.yaml.
-    success_msg: >-
-      Disk check passed — {{ (staging_mount.size_available | int / 1073741824) | round(1) }} GB
-      available on {{ staging_mount.mount }}.
-  tags: [preflight]
+  # `command -v` (a POSIX shell builtin) rather than `which`: the UBI 9 base the
+  # EE is built from doesn't ship the `which` binary (RHEL 9 deprecated it). All
+  # four tools are baked into the EE; this just confirms they're on PATH.
 
 - name: Ensure staging directories exist
   ansible.builtin.file:
@@ -161,4 +124,35 @@
     - "{{ artifact_staging_dir }}"
     - "{{ image_tar_dir }}"
     - "{{ helm_chart_dir }}"
+  tags: [preflight]
+  # Created BEFORE the disk check so `df` below has a real path to measure.
+
+- name: Measure free space on the staging filesystem
+  ansible.builtin.command:
+    cmd: "df -P -B1 {{ artifact_staging_dir }}"
+  register: staging_df
+  changed_when: false
+  tags: [preflight]
+  # `df` reports the filesystem that actually holds artifact_staging_dir — and,
+  # crucially, it works the same inside the EE as on bare metal. The previous
+  # approach derived this from ansible_facts['mounts'], but a container's mount
+  # table doesn't expose the bind-mounted host path the same way, so the lookup
+  # came back empty. `df -P` prints a header line then one data line; with -B1
+  # the columns are in bytes: [fs, total, used, AVAIL, capacity, mountpoint].
+
+- name: Assert sufficient free disk space
+  vars:
+    _avail_bytes: "{{ staging_df.stdout_lines[1].split()[3] }}"
+    _mountpoint:  "{{ staging_df.stdout_lines[1].split()[5] }}"
+  ansible.builtin.assert:
+    that:
+      - (_avail_bytes | int) >= (min_free_disk_gb | int * 1024 * 1024 * 1024)
+    fail_msg: >-
+      Insufficient disk space on {{ _mountpoint }}.
+      Available : {{ (_avail_bytes | int / 1073741824) | round(1) }} GB
+      Required  : {{ min_free_disk_gb }} GB
+      Free up space or lower min_free_disk_gb in group_vars/all/main.yaml.
+    success_msg: >-
+      Disk check passed — {{ (_avail_bytes | int / 1073741824) | round(1) }} GB
+      available on {{ _mountpoint }}.
   tags: [preflight]
