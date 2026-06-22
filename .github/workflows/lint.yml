@@ -19,6 +19,10 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege: every job here only reads the checked-out tree.
+permissions:
+  contents: read
+
 jobs:
 
   # ---------------------------------------------------------------------------
@@ -28,7 +32,7 @@ jobs:
     name: yaml-lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install yamllint
         run: pip install yamllint
@@ -48,7 +52,7 @@ jobs:
     name: syntax-check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install ansible-core
         run: pip install 'ansible-core>=2.17'
@@ -86,7 +90,7 @@ jobs:
     name: ee-validate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install ansible-builder
         run: pip install ansible-builder
@@ -112,7 +116,7 @@ jobs:
     name: shellcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: ShellCheck the shell scripts
         run: |
@@ -144,7 +148,7 @@ jobs:
     container:
       image: ${{ matrix.image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Python 3.12 and build an ansible venv
         run: |
@@ -192,7 +196,7 @@ jobs:
     name: release-dry-run
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Build pull zip (dry run)
         run: |
