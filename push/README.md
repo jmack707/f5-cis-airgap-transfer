@@ -141,6 +141,57 @@ For the **HTTPS** profile, also uncomment the CA `volume-mount` in
 `ansible-navigator.yml` so `helm` inside the EE can verify TLS (`helm` talks to
 the registry directly, not via the Docker daemon).
 
+#### HTTPS registry checklist (private CA)
+
+An HTTPS registry with a private/self-signed CA needs the CA trusted in **two**
+places, because two different programs do TLS — the host Docker daemon (for
+`docker load`/`tag`/`push`) and `helm` running inside the EE (for the OCI chart
+push). Validated end-to-end against a TLS registry with a lab root CA. The full
+set of steps:
+
+1. **Put the *root CA* (not the server cert) at `ccn_registry_ca_path`** on the
+   host (default `/etc/ssl/certs/internal-ca.crt`). Confirm it's the CA — subject
+   and issuer should match and name the CA:
+   ```bash
+   openssl x509 -in /etc/ssl/certs/internal-ca.crt -noout -subject -issuer
+   ```
+
+2. **Mount the CA into the EE** — uncomment the CA block under `volume-mounts:`
+   in `ansible-navigator.yml`, matching `ccn_registry_ca_path`. (navigator
+   refuses to start if the `src` path doesn't exist, so do step 1 first.) This is
+   what lets `helm push --ca-file` verify the cert.
+
+3. **Trust the CA for the host daemon:**
+   ```bash
+   sudo ./host-prep.sh --host <registry-host> --port <port> \
+     --ca-path /etc/ssl/certs/internal-ca.crt
+   ```
+
+4. **Connect by the cert's name.** TLS verification matches the hostname you
+   connect with against the cert's SAN, so set `vault_ccn_registry_host` to the
+   name in the cert (e.g. `registry.internal.example.com`), not an IP. If that
+   name isn't resolvable from inside the EE container (common with a
+   `*.localhost` / loopback registry, or a name only in the host's `/etc/hosts`),
+   map it to a routable address with an `--add-host` in `ansible-navigator.yml`:
+   ```yaml
+       container-options:
+         - "--user=root"
+         - "--add-host=registry.internal.example.com:172.16.20.145"   # host IP
+   ```
+   Use the host's own IP when the registry is published on `0.0.0.0:<port>`; the
+   EE reaches it over NAT while still presenting the cert name.
+
+5. **Set auth** if the registry requires it (`401 … WWW-Authenticate`): in
+   `vault.yaml`, `vault_ccn_registry_insecure: false`,
+   `vault_ccn_registry_auth_required: true`, plus the username and token.
+
+Sanity-check before the full run:
+```bash
+docker login <registry-host>:<port> -u <user>
+helm registry login <registry-host>:<port> -u <user> \
+  --ca-file /etc/ssl/certs/internal-ca.crt
+```
+
 ### 5. Run
 
 ```bash
